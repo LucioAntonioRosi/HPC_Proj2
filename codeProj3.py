@@ -229,7 +229,11 @@ def Tj_matrix_probably_wrong(vtxj, beltj_artf, Bj, k, j, J):
     return Tj
 
 def Sj_factorization(Aj, Tj, Bj):
-    return spla.splu(Aj - 1j*(Bj.T @ Tj @ Bj))
+    # CSC format is more efficient for direct solvers
+    Aj_csc = csc_matrix(Aj)
+    Tj_csc = csc_matrix(Tj)
+    Bj_csc = csc_matrix(Bj)
+    return spla.splu(Aj_csc - 1j * (Bj_csc.T @ Tj_csc @ Bj_csc))
 
 # don't understand why ps, I put sp
 def bj_vector(vtxj, eltj, sp, k):
@@ -265,7 +269,6 @@ def Pi_operator(nx, J, x):
         x[i + nx: i + 2*nx] = aux
     return x
 
-
 def Pi_operator(nx, J): # This isn't needed probably
     cols = np.arange(0, 2*(J-1)*nx)
     for i in range (nx, (2*J - 3)*nx,2*nx):
@@ -292,17 +295,16 @@ J = 4
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
 x  = np.ones(2*nx*(J-1), dtype=np.complex128)
 S = S_operator(nx, ny, Lx, Ly, J, x)
-vtx, elt = mesh(nx, ny, Lx, Ly)
-belt = boundary(nx, ny)
-M = mass(vtx, elt)
-Mb = mass(vtx, belt) # The dimentions of Mb are the same as the ones of M, because of the function mass
 vtx, elt = local_mesh(nx, ny, Lx, Ly,j,J)
 belt_phys, belt_artf = local_boundary(nx, ny,j,J)
 Aj = Aj_matrix(vtx, elt, belt_phys, k)
 Bj = Bj_matrix(nx, ny, belt_artf, J)
 Cj = Cj_matrix(nx, ny, j, J)
-Tj = Tj_matrix(vtx, belt_artf, Bj, k,j, J)
-
+Tj = Tj_matrix(vtx, belt_artf, Bj, k)
+vtx, elt = mesh(nx, ny, Lx, Ly)
+belt = boundary(nx, ny)
+M = mass(vtx, elt)
+Mb = mass(vtx, belt) # The dimentions of Mb are the same as the ones of M, because of the function mass
 K = stiffness(vtx, elt)
 A = K - k**2 * M - 1j*k*Mb      # matrix of linear system 
 b = M @ point_source(sp,k)(vtx) # linear system RHS (source term)
