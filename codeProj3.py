@@ -11,8 +11,6 @@ from matplotlib import cm
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 
-import Mesh
-
 def mesh(nx,ny,Lx,Ly):
    i = np.arange(0,nx)[na,:] * np.ones((ny,1), np.int64)
    j = np.arange(0,ny)[:,na] * np.ones((1,nx), np.int64)
@@ -100,7 +98,7 @@ def plot_mesh(vtx, elt, val=None, **kwargs):
     plt.axis('equal')
 
 #############################################################################
-##                           Local mesh                                    ##
+##                             Local mesh                                  ##
 #############################################################################
 
 def local_mesh(nx,ny,Lx,Ly,j,J):
@@ -135,7 +133,7 @@ def local_boundary(nx, ny, j, J):
     return beltj_phys, beltj_artf
 
 #############################################################################
-##                    Restricion matrices                                  ##
+##                          Restriction matrices                           ##
 #############################################################################
 
 def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
@@ -167,7 +165,7 @@ def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
     return csr_matrix((data, (rows,cols)), shape=(len(rows), 2*(J - 1)*nx))
 
 #############################################################################
-##                             Local matrices                              ##
+##                           Local matrices                                ##
 #############################################################################
 
 def Aj_matrix(vtxj, eltj, beltj_phys, k):
