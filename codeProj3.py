@@ -101,7 +101,7 @@ def plot_mesh(vtx, elt, val=None, **kwargs):
 ##                             Local mesh                                  ##
 #############################################################################
 
-def local_mesh(nx,ny,Lx,Ly,j,J):
+def local_mesh(nx, ny, Lx, Ly, j, J):
     assert j >= 0 and j < J
     vtx, elt = mesh(nx,ny,Lx,Ly)
     endj = (ny - 1) // J
@@ -112,6 +112,7 @@ def local_mesh(nx,ny,Lx,Ly,j,J):
     return vtxj, eltj
 
 def local_boundary(nx, ny, j, J):
+    assert j >= 0 and j < J
     endj = (ny - 1) // J
     bottom = np.hstack((np.arange(endj*j*nx,j*endj*nx + nx - 1,1)[:,na],
                         np.arange(endj*j*nx + 1,endj*j*nx + nx,1)[:,na]))
@@ -137,6 +138,7 @@ def local_boundary(nx, ny, j, J):
 #############################################################################
 
 def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
+    assert j >= 0 and j < J
     endj = (ny - 1) // J
     cols = np.arange(endj*j*nx,(endj*(j + 1) + 1)*nx)
     rows = np.arange(len(cols))
@@ -153,6 +155,7 @@ def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1)
     return csr_matrix((data, (rows,cols)), shape=(len(rows),nx * (((ny - 1) // J) + 1)))
 
 def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
+    assert j >= 0 and j < J
     if j == 0:
         cols = np.arange(0, nx)
     elif j == J - 1:
@@ -175,14 +178,16 @@ def Aj_matrix(vtxj, eltj, beltj_phys, k):
     Aj = Kj - k**2 * Mj - 1j*k*Mbj
     return Aj
 
+#probably wrong
 def Tj_matrix(vtxj, beltj_artf, Bj, k):
     Mb = mass(vtxj, beltj_artf)
-    Tj = k* (Bj @ Mb)
+    Tj = k * (Bj @ Mb)
     return Tj
 
 def Sj_factorization(Aj, Tj, Bj):
     return spla.splu(Aj - 1j*(Bj.T @ Tj @ Bj))
 
+# don't understand why ps, I put sp
 def bj_vector(vtxj, eltj, sp, k):
     Mj = mass(vtxj, eltj)
     return Mj @ point_source(sp, k)(vtxj)
@@ -204,7 +209,7 @@ def S_operator(nx, ny, Lx, Ly, J):
         Cj = Cj_matrix(nx, ny, j, J)
         
         if j == 0:
-            S[0:nx, 0:nx] = 2j * Bj @ Sj @ (Bj.T @ Tj)
+            S[0:nx, 0:nx] = 2j * Bj @ (Sj @ (Bj.T @ Tj))
         elif j == J - 1:
             S[(2*j - 1)*nx:2*j*nx, (2*j - 1)*nx:2*j*nx] = 2j * Bj @ Sj @ (Bj.T @ Tj)
         else:
@@ -222,10 +227,7 @@ def Pi_operator(nx, J):
     rows = np.arange(0, 2*(J-1)*nx)
     data = np.ones_like(cols)
     return csr_matrix((data, (rows, cols)), shape=(2*(J-1)*nx, 2*(J-1)*nx))
-
-def b_vector():
     
-
 #############################################################################
 
 ## Example resolution of model problem
@@ -236,8 +238,8 @@ ny = 1 + Ly * 1 # Number of points in y direction
 k = 16           # Wavenumber of the problem
 ns = 8           # Number of point sources + random position and weight below
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
-vtx, elt = local_mesh(nx, ny, Lx, Ly, 0 ,4)
-belt = local_boundary(nx, ny, 1, 4)
+vtx, elt = mesh(nx, ny, Lx, Ly)
+belt = boundary(nx, ny)
 vtx, elt = mesh(nx, ny, Lx, Ly)
 belt = boundary(nx, ny)
 M = mass(vtx, elt)
@@ -251,6 +253,7 @@ x = spla.spsolve(A, b)          # solution of linear system via direct solver
 residuals = [] # storage of GMRES residual history
 def callback(x):
     residuals.append(x)
+#y, _ = spla.gmres(A, b, tol=1e-12, callback=callback, callback_type='pr_norm')   
 y, _ = spla.gmres(A, b, rtol=1e-12, callback=callback, callback_type='pr_norm')
 print("Total number of GMRES iterations = ", len(residuals))
 print("Direct vs GMRES error            = ", la.norm(y - x))
