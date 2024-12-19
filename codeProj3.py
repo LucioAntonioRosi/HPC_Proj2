@@ -28,16 +28,6 @@ def mesh(nx,ny,Lx,Ly):
    elt = np.reshape(p, (2*(nx-1)*(ny-1),3)) # The triangles are stored s.t. the "low triangles" in a square come all before the "high triangles" 
    return vtx, elt 
 
-def local_mesh(nx,ny,Lx,Ly,j,J):
-    assert j >= 0 and j < J
-    vtx, elt = mesh(nx,ny,Lx,Ly)
-    endj = (ny - 1) // J
-    vtxj = vtx[endj*j*nx:((j + 1)*endj + 1)*nx,:]
-    eltj1 = elt[endj*j*(nx-1):((j + 1)*endj)*(nx - 1),:]
-    eltj2 = elt[(nx-1)*(ny-1) + endj*j*(nx-1):(nx-1)*(ny-1) + ((j + 1)*endj)*(nx - 1),:] 
-    eltj = np.concatenate((eltj1, eltj2), axis=0) 
-    return vtxj, eltj
-
 def boundary(nx, ny):
     bottom = np.hstack((np.arange(0,nx-1,1)[:,na],
                         np.arange(1,nx,1)[:,na]))
@@ -48,27 +38,6 @@ def boundary(nx, ny):
     right  = np.hstack((np.arange(nx-1,nx*(ny-1),nx)[:,na],
                         np.arange(2*nx-1,nx*ny,nx)[:,na]))
     return np.vstack((bottom, top, left, right))
-
-def local_boundary(nx, ny, j, J):
-    endj = (ny - 1) // J
-    bottom = np.hstack((np.arange(endj*j*nx,j*endj*nx + nx - 1,1)[:,na],
-                        np.arange(endj*j*nx + 1,endj*j*nx + nx,1)[:,na]))
-    top    = np.hstack((np.arange(nx*(j + 1)*endj,nx*(j + 1)*endj + nx - 1 ,1)[:,na],
-                        np.arange(nx*(j + 1)*endj + 1,nx*(j + 1)*endj + nx,1)[:,na]))
-    left   = np.hstack((np.arange(endj*j*nx,endj*(j + 1)*nx,nx)[:,na],
-                        np.arange(endj*j*nx + nx,endj*(j + 1)*nx + nx,nx)[:,na]))
-    right  = np.hstack((np.arange(endj*j*nx + nx - 1,endj*(j + 1)*nx,nx)[:,na],
-                        np.arange(endj*j*nx + 2*nx - 1,(endj*(j + 1) + 1)*nx,nx)[:,na]))
-    if j == 0:
-        beltj_phys = np.vstack((bottom, left, right))
-        beltj_artf = top
-    elif j == J - 1:
-        beltj_phys = np.vstack((top, left, right))
-        beltj_artf = bottom
-    else:
-        beltj_phys = np.vstack((left, right))
-        beltj_artf = np.vstack((bottom, top))
-    return beltj_phys, beltj_artf
 
 def get_area(vtx, elt):
     d = np.size(elt, 1)
@@ -129,6 +98,41 @@ def plot_mesh(vtx, elt, val=None, **kwargs):
                       shading='gouraud',
                       cmap=cm.jet, **kwargs)
     plt.axis('equal')
+
+#############################################################################
+##                           Local mesh                                    ##
+#############################################################################
+
+def local_mesh(nx,ny,Lx,Ly,j,J):
+    assert j >= 0 and j < J
+    vtx, elt = mesh(nx,ny,Lx,Ly)
+    endj = (ny - 1) // J
+    vtxj = vtx[endj*j*nx:((j + 1)*endj + 1)*nx,:]
+    eltj1 = elt[endj*j*(nx-1):((j + 1)*endj)*(nx - 1),:]
+    eltj2 = elt[(nx-1)*(ny-1) + endj*j*(nx-1):(nx-1)*(ny-1) + ((j + 1)*endj)*(nx - 1),:] 
+    eltj = np.concatenate((eltj1, eltj2), axis=0) 
+    return vtxj, eltj
+
+def local_boundary(nx, ny, j, J):
+    endj = (ny - 1) // J
+    bottom = np.hstack((np.arange(endj*j*nx,j*endj*nx + nx - 1,1)[:,na],
+                        np.arange(endj*j*nx + 1,endj*j*nx + nx,1)[:,na]))
+    top    = np.hstack((np.arange(nx*(j + 1)*endj,nx*(j + 1)*endj + nx - 1 ,1)[:,na],
+                        np.arange(nx*(j + 1)*endj + 1,nx*(j + 1)*endj + nx,1)[:,na]))
+    left   = np.hstack((np.arange(endj*j*nx,endj*(j + 1)*nx,nx)[:,na],
+                        np.arange(endj*j*nx + nx,endj*(j + 1)*nx + nx,nx)[:,na]))
+    right  = np.hstack((np.arange(endj*j*nx + nx - 1,endj*(j + 1)*nx,nx)[:,na],
+                        np.arange(endj*j*nx + 2*nx - 1,(endj*(j + 1) + 1)*nx,nx)[:,na]))
+    if j == 0:
+        beltj_phys = np.vstack((bottom, left, right))
+        beltj_artf = top
+    elif j == J - 1:
+        beltj_phys = np.vstack((top, left, right))
+        beltj_artf = bottom
+    else:
+        beltj_phys = np.vstack((left, right))
+        beltj_artf = np.vstack((bottom, top))
+    return beltj_phys, beltj_artf
 
 #############################################################################
 ##                    Restricion matrices                                  ##
