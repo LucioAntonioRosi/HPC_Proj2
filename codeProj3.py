@@ -196,14 +196,21 @@ def Aj_matrix(vtxj, eltj, beltj_phys, k):
     Aj = csr_matrix(Kj - k**2 * Mj - 1j*k*Mbj)
     return Aj
 
-# I added j and J because the implementation of the matrix is different for the first and last domain
+# This should be the correct implementation of Tj_matrix, since Tj is defined on the skeleton of the mesh
+# and by defining it as Bj.T @ Mb @ Bj we are giving it dimention of (Omega_j)^2
+def Tj_matrix(vtxj, beltj_artf, Bj, k):
+    Mb = mass(vtxj, beltj_artf)
+    Tj = csr_matrix(k * (Bj @ Mb @ Bj.T))
+    return Tj
 
-def Tj_matrix(vtxj, beltj_artf, Bj, k, j, J):
+# I added j and J because the implementation of the matrix is different for the first and last domain
+def Tj_matrix_probably_wrong(vtxj, beltj_artf, Bj, k, j, J):
     dim1 = np.size(Bj, 0)
     dim2 = np.size(Bj, 1)
     Tj = csr_matrix((dim2, dim2), dtype=np.float64)
     Mb = mass(vtxj, beltj_artf) # mass matrix related to the artificial boundary of Omega_j
 
+    T = Bj @ Mb @ Bj.T
     if j == 0:
         indexes = np.arange(dim2 - dim1, dim2)
         Mb = csr_matrix(Mb[indexes, :][:, indexes])
@@ -218,7 +225,7 @@ def Tj_matrix(vtxj, beltj_artf, Bj, k, j, J):
         Mb2 = csr_matrix(Mb[indexes2, :][:, indexes2])
         Mb = block_diag((Mb1, Mb2), format='csr')
 
-    Tj = k * (Bj.T @ Mb @ Bj)
+    Tj = csr_matrix(k * (Bj.T @ Mb @ Bj))
     return Tj
 
 def Sj_factorization(Aj, Tj, Bj):
@@ -233,9 +240,11 @@ def bj_vector(vtxj, eltj, sp, k):
 ##                             Global operators                            ##
 #############################################################################
 
-#not sure why it requires Cj
-def S_operator(nx, ny, Lx, Ly, J):
-    S = csr_matrix(2*nx*(J-1),2*nx*(J-1), dtype=np.complex128)
+def S_operator(nx, ny, Lx, Ly, J, x):
+    # y = Sx
+    dimS = 2*nx*(J-1)
+    S = csr_matrix((dimS,dimS), dtype=np.complex128)
+    y = x.copy() # by doing this I am already considering the identity in S
     for j in range(J):
         vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
         beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
@@ -244,18 +253,20 @@ def S_operator(nx, ny, Lx, Ly, J):
         Tj = Tj_matrix(vtxj, beltj_artf, Bj, k)
         Sj = Sj_factorization(Aj, Tj, Bj)
         Cj = Cj_matrix(nx, ny, j, J)
-        
-        if j == 0:
-            S[0:nx, 0:nx] = 2j * Bj @ (Sj @ (Bj.T @ Tj))
-        elif j == J - 1:
-            S[(2*j - 1)*nx:2*j*nx, (2*j - 1)*nx:2*j*nx] = 2j * Bj @ Sj @ (Bj.T @ Tj)
-        else:
-            S[(2*j - 1)*nx:(2*j + 1)*nx, (2*j - 1)*nx:(2*j + 1)*nx] = 2j * Bj @ Sj @ (Bj.T @ Tj)
-    
-    S += np.eye(2*nx*(J-1))
+        xj = Cj @ x
+        y += Cj.T @  (2j * Bj @ Sj.solve(Bj.T @ Tj @ xj))
+
     return S
 
-def Pi_operator(nx, J):
+def Pi_operator(nx, J, x):
+    for i in range (nx, (2*J - 3)*nx,2*nx):
+        aux = x[i: i + nx]
+        x[i: i + nx] = x[i + nx: i + 2*nx]
+        x[i + nx: i + 2*nx] = aux
+    return x
+
+
+def Pi_operator(nx, J): # This isn't needed probably
     cols = np.arange(0, 2*(J-1)*nx)
     for i in range (nx, (2*J - 3)*nx,2*nx):
         aux = cols[i: i + nx]
@@ -279,6 +290,8 @@ ns = 8           # Number of point sources + random position and weight below
 j = 1
 J = 4
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
+x  = np.ones(2*nx*(J-1), dtype=np.complex128)
+S = S_operator(nx, ny, Lx, Ly, J, x)
 vtx, elt = mesh(nx, ny, Lx, Ly)
 belt = boundary(nx, ny)
 M = mass(vtx, elt)
