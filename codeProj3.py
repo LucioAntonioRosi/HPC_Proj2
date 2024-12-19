@@ -5,7 +5,7 @@ import numpy as np
 na = np.newaxis
 import numpy.linalg as la
 import scipy.sparse.linalg as spla
-from scipy.sparse import csr_matrix, csc_matrix
+from scipy.sparse import csr_matrix, csc_matrix, block_diag #Added block_diag for Tj_matrix
 
 from matplotlib import cm
 import matplotlib.pyplot as plt
@@ -37,7 +37,10 @@ def boundary(nx, ny):
                         np.arange(2*nx-1,nx*ny,nx)[:,na]))
     return np.vstack((bottom, top, left, right))
 
+# If i give triangles as second input, it computes the area of each triangle and returns a vector of areas
+# If i am giving the boundary as second input, it computes the length of each boundary segment and returns a vector of lengths
 def get_area(vtx, elt):
+
     d = np.size(elt, 1)
     if d == 2:
         e = vtx[elt[:, 1], :] - vtx[elt[:, 0], :]
@@ -108,20 +111,31 @@ def local_mesh(nx, ny, Lx, Ly, j, J):
     vtxj = vtx[endj*j*nx:((j + 1)*endj + 1)*nx,:]
     eltj1 = elt[endj*j*(nx-1):((j + 1)*endj)*(nx - 1),:]
     eltj2 = elt[(nx-1)*(ny-1) + endj*j*(nx-1):(nx-1)*(ny-1) + ((j + 1)*endj)*(nx - 1),:] 
-    eltj = np.concatenate((eltj1, eltj2), axis=0) 
+    eltj = np.concatenate((eltj1, eltj2), axis=0)
+    eltj = eltj - eltj.min() # renumbering of triangles for local mesh
     return vtxj, eltj
 
 def local_boundary(nx, ny, j, J):
+    # I am keeping the arrays with the 2 in the name because I am not sure if I need them,
+    # but probably the right ones are the ones without 2
     assert j >= 0 and j < J
     endj = (ny - 1) // J
-    bottom = np.hstack((np.arange(endj*j*nx,j*endj*nx + nx - 1,1)[:,na],
+    bottom2 = np.hstack((np.arange(endj*j*nx,j*endj*nx + nx - 1,1)[:,na],
                         np.arange(endj*j*nx + 1,endj*j*nx + nx,1)[:,na]))
-    top    = np.hstack((np.arange(nx*(j + 1)*endj,nx*(j + 1)*endj + nx - 1 ,1)[:,na],
+    bottom = np.hstack((np.arange(0,nx - 1,1)[:,na],
+                        np.arange(1,nx,1)[:,na]))
+    top2    = np.hstack((np.arange(nx*(j + 1)*endj,nx*(j + 1)*endj + nx - 1 ,1)[:,na],
                         np.arange(nx*(j + 1)*endj + 1,nx*(j + 1)*endj + nx,1)[:,na]))
-    left   = np.hstack((np.arange(endj*j*nx,endj*(j + 1)*nx,nx)[:,na],
+    top    = np.hstack((np.arange(nx*endj,nx*(endj + 1) -1,1)[:,na],
+                        np.arange(nx*endj + 1,nx*(endj + 1),1)[:,na]))
+    left2   = np.hstack((np.arange(endj*j*nx,endj*(j + 1)*nx,nx)[:,na],
                         np.arange(endj*j*nx + nx,endj*(j + 1)*nx + nx,nx)[:,na]))
-    right  = np.hstack((np.arange(endj*j*nx + nx - 1,endj*(j + 1)*nx,nx)[:,na],
+    left   = np.hstack((np.arange(0,nx*endj,nx)[:,na],
+                        np.arange(nx,nx*(endj + 1),nx)[:,na]))
+    right2  = np.hstack((np.arange(endj*j*nx + nx - 1,endj*(j + 1)*nx,nx)[:,na],
                         np.arange(endj*j*nx + 2*nx - 1,(endj*(j + 1) + 1)*nx,nx)[:,na]))
+    right  = np.hstack((np.arange(nx - 1,nx*endj,nx)[:,na],
+                        np.arange(2*nx - 1,nx*(endj + 1),nx)[:,na]))
     if j == 0:
         beltj_phys = np.vstack((bottom, left, right))
         beltj_artf = top
@@ -147,13 +161,17 @@ def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
 
 def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1) // J) + 1))
     cols = belt_artf[:,0]
-    aux = belt_artf[-1::(nx - 1),1]
-    np.append(cols,belt_artf[aux,1])
-    np.sort(cols)
+    aux = belt_artf[nx - 2::(nx - 1),1] # Aux takes every value starting from position nx - 2
+                                        # in the position multiple of nx - 1
+    cols = np.append(cols,aux)
+    cols = np.sort(cols)
     rows = np.arange(len(cols))
     data = np.ones_like(cols)
     return csr_matrix((data, (rows,cols)), shape=(len(rows),nx * (((ny - 1) // J) + 1)))
 
+# S has dimention 2*nx*(J-1) since every artificial surface has 2*nx points a part from the first and last
+# that have nx points
+# Also, ny shouldn't be needed since we are not looking at the y direction expicitly
 def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
     assert j >= 0 and j < J
     if j == 0:
@@ -172,16 +190,35 @@ def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
 #############################################################################
 
 def Aj_matrix(vtxj, eltj, beltj_phys, k):
-    Mj = mass(vtxj, eltj)
-    Mbj = mass(vtxj, beltj_phys)
+    Mj = mass(vtxj, eltj) # mass matrix related to Omega_j
+    Mbj = mass(vtxj, beltj_phys) # mass matrix related to the physical boundary of Omega_j (does not include artificial boundary)
     Kj = stiffness(vtxj, eltj)
-    Aj = Kj - k**2 * Mj - 1j*k*Mbj
+    Aj = csr_matrix(Kj - k**2 * Mj - 1j*k*Mbj)
     return Aj
 
-#probably wrong
-def Tj_matrix(vtxj, beltj_artf, Bj, k):
-    Mb = mass(vtxj, beltj_artf)
-    Tj = k * (Bj @ Mb)
+# I added j and J because the implementation of the matrix is different for the first and last domain
+
+def Tj_matrix(vtxj, beltj_artf, Bj, k, j, J):
+    dim1 = np.size(Bj, 0)
+    dim2 = np.size(Bj, 1)
+    Tj = csr_matrix((dim2, dim2), dtype=np.float64)
+    Mb = mass(vtxj, beltj_artf) # mass matrix related to the artificial boundary of Omega_j
+
+    if j == 0:
+        indexes = np.arange(dim2 - dim1, dim2)
+        Mb = csr_matrix(Mb[indexes, :][:, indexes])
+    elif j == J - 1:
+        indexes = np.arange(dim1)
+        Mb = csr_matrix(Mb[indexes, :][:, indexes])
+    else:
+        dim1 = dim1 // 2
+        indexes1 = np.arange(dim1)
+        indexes2 = np.arange(dim2 - dim1, dim2)
+        Mb1 = csr_matrix(Mb[indexes1, :][:, indexes1])
+        Mb2 = csr_matrix(Mb[indexes2, :][:, indexes2])
+        Mb = block_diag((Mb1, Mb2), format='csr')
+
+    Tj = k * (Bj.T @ Mb @ Bj)
     return Tj
 
 def Sj_factorization(Aj, Tj, Bj):
@@ -230,20 +267,29 @@ def Pi_operator(nx, J):
     
 #############################################################################
 
+## Ly has to be a multiple of J
+
 ## Example resolution of model problem
-Lx = 3           # Length in x direction
-Ly = 12           # Length in y direction
-nx = 1 + Lx * 3 # Number of points in x direction
-ny = 1 + Ly * 1 # Number of points in y direction
+Lx = 4           # Length in x direction
+Ly = 4           # Length in y direction
+nx = 1 + Lx * 2 # Number of points in x direction
+ny = 1 + Ly * 5 # Number of points in y direction
 k = 16           # Wavenumber of the problem
 ns = 8           # Number of point sources + random position and weight below
+j = 1
+J = 4
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
 vtx, elt = mesh(nx, ny, Lx, Ly)
 belt = boundary(nx, ny)
-vtx, elt = mesh(nx, ny, Lx, Ly)
-belt = boundary(nx, ny)
 M = mass(vtx, elt)
-Mb = mass(vtx, belt)
+Mb = mass(vtx, belt) # The dimentions of Mb are the same as the ones of M, because of the function mass
+vtx, elt = local_mesh(nx, ny, Lx, Ly,j,J)
+belt_phys, belt_artf = local_boundary(nx, ny,j,J)
+Aj = Aj_matrix(vtx, elt, belt_phys, k)
+Bj = Bj_matrix(nx, ny, belt_artf, J)
+Cj = Cj_matrix(nx, ny, j, J)
+Tj = Tj_matrix(vtx, belt_artf, Bj, k,j, J)
+
 K = stiffness(vtx, elt)
 A = K - k**2 * M - 1j*k*Mb      # matrix of linear system 
 b = M @ point_source(sp,k)(vtx) # linear system RHS (source term)
