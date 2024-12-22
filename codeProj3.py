@@ -236,7 +236,7 @@ def Sj_factorization(Aj, Tj, Bj):
     return spla.splu(Aj_csc - 1j * (Bj_csc.T @ Tj_csc @ Bj_csc))
 
 # don't understand why ps, I put sp
-def bj_vector(vtxj, eltj, sp, k):
+def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
     Mj = mass(vtxj, eltj)
     return Mj @ point_source(sp, k)(vtxj)
 
@@ -262,7 +262,7 @@ def S_operator(nx, ny, Lx, Ly, J, x):
 
     return S
 
-def Pi_operator(nx, J, x):
+def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours, thus x has dimention 2*nx*(J-1)
     for i in range (nx, (2*J - 3)*nx,2*nx):
         aux = x[i: i + nx]
         x[i: i + nx] = x[i + nx: i + 2*nx]
@@ -279,7 +279,77 @@ def Pi_operator(nx, J): # This isn't needed probably
     data = np.ones_like(cols)
     return csr_matrix((data, (rows, cols)), shape=(2*(J-1)*nx, 2*(J-1)*nx))
     
+# This isn't b, but the vector g (I still don't know if it makes more sense like this)
+def b_vector(nx, ny, Lx, Ly, sp, k, J):
+    dimB = 2*nx*(J-1)
+    b = np.zeros(dimB, dtype = np.complex128)
+    for j in range(J):
+        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
+        _, beltj_artf = local_boundary(nx, ny, j, J)
+        Bj = Bj_matrix(nx, ny, belt_artf, J)
+        Cj = Cj_matrix(nx, ny, j, J)
+        bj = bj_vector(vtxj, eltj, sp, k) # dim Omega_j
+        bj_artf = Bj @ bj # this is bj at the artificial boundary
+    return b
+
 #############################################################################
+
+#############################################################################
+##                      Fixed Point Method                                 ##
+#############################################################################
+
+def fixed_point(nx, ny, Lx, Ly, J, p0, w, tol = 1e-6, iter_max = 1000):
+    assert w > 0 and w < 1
+    err = 1
+    iter = 0
+    b = b_vector(nx, ny, Lx, Ly, sp, k, J)
+    #TODO: implement g
+    assert len(p0) == len(g)  and len(p0) == len(g)
+    p_next = np.zeros_like(p0)
+    p_0 = p0.copy()
+    
+    while (err > tol and iter < iter_max):
+        p_next = (1 - w)*p_0 - w*Pi_operator(nx,J,S_operator(nx, ny, Lx, Ly, J, p_0)) + w*g
+        err = np.linalg.norm(p_next - p_0, ord=2)
+        p_0 = p_next
+        iter += 1
+    
+    
+    return p_next, iter, err
+
+#############################################################################
+##                          GMRES Method                                   ##
+#############################################################################
+
+def linear_op(nx, ny, Lx, Ly, J, x):
+    return x + Pi_operator(nx, J, S_operator(nx, ny, Lx, Ly, J, x))
+
+
+
+def MyGmres(nx, ny, Lx, Ly, J, p0, tol = 1e-12):
+    A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec = linear_op, dtype = np.complex128)
+    #TODO: implement g
+    Myresiduals = []
+    def callback2(x):
+        Myresiduals.append(x)
+    y, _ = spla.gmres(A, g, x0 = p0, rtol = tol, callback=callback2, callback_type='pr_norm')
+    return y, Myresiduals
+
+#############################################################################
+##                         Local Solutions                                 ##
+#############################################################################
+
+def uj_solution(nx, ny, Lx, Ly, j, J, sp, k, x): # x is the solution of the linear system
+    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
+    beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
+    Bj = Bj_matrix(nx, ny, beltj_artf, J)
+    Aj = Aj_matrix(vtxj, eltj, beltj_phys, k)
+    Tj = Tj_matrix(vtxj, beltj_artf, Bj, k)
+    Sj = Sj_factorization(Aj, Tj, Bj)
+    Cj = Cj_matrix(nx, ny, j, J)
+    bj = bj_vector(vtxj, eltj, sp, k)
+    xj = Cj @ x
+    return Sj.solve(bj + Bj.T @ Tj @ xj)
 
 ## Ly has to be a multiple of J
 
@@ -312,8 +382,10 @@ x = spla.spsolve(A, b)          # solution of linear system via direct solver
 
 # GMRES
 residuals = [] # storage of GMRES residual history
+
 def callback(x):
     residuals.append(x)
+
 #y, _ = spla.gmres(A, b, tol=1e-12, callback=callback, callback_type='pr_norm')   
 y, _ = spla.gmres(A, b, rtol=1e-12, callback=callback, callback_type='pr_norm')
 print("Total number of GMRES iterations = ", len(residuals))
