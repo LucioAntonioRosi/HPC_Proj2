@@ -105,6 +105,16 @@ def plot_mesh(vtx, elt, val=None, **kwargs):
 #############################################################################
 
 def local_mesh(nx, ny, Lx, Ly, j, J):
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        Lx, Ly: lenghts of the domain in the x and y direction
+        j: subdivision to be considered
+        J: total number of subdivisions of the domain
+    Output: 
+        vtxj: vertex of the j-th subdivision
+        eltj: connectivity of the triangles in the j-th subdivision
+    """
     assert j >= 0 and j < J
     vtx, elt = mesh(nx,ny,Lx,Ly)
     endj = (ny - 1) // J
@@ -116,6 +126,14 @@ def local_mesh(nx, ny, Lx, Ly, j, J):
     return vtxj, eltj
 
 def local_boundary(nx, ny, j, J):
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        j: subdivision to be considered
+        J: total number of subdivisions of the domain
+    Output: 
+        beltj_phys, beltj_artf: connectivity of the physical and artificial boundaries
+    """
     # I am keeping the arrays with the 2 in the name because I am not sure if I need them,
     # but probably the right ones are the ones without 2
     assert j >= 0 and j < J
@@ -144,7 +162,7 @@ def local_boundary(nx, ny, j, J):
         beltj_artf = bottom
     else:
         beltj_phys = np.vstack((left, right))
-        beltj_artf = np.vstack((bottom, top))
+        beltj_artf = np.vstack((bottom, top)) 
     return beltj_phys, beltj_artf
 
 #############################################################################
@@ -152,6 +170,14 @@ def local_boundary(nx, ny, j, J):
 #############################################################################
 
 def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        j: subdivision to be considered
+        J: total number of subdivisions of the domain
+    Output: 
+        crs_matrix: the local volume restiction matrix R_j
+    """
     assert j >= 0 and j < J
     endj = (ny - 1) // J
     cols = np.arange(endj*j*nx,(endj*(j + 1) + 1)*nx)
@@ -160,6 +186,14 @@ def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
     return csr_matrix((data, (rows, cols)), shape=(len(rows),nx * ny))
 
 def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1) // J) + 1))
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        belt_artf: connectivity of the artificial boundaries
+        J: total number of subdivisions of the domain
+    Output: 
+        crs_matrix: the local boundary restiction matrix B_j
+    """
     cols = belt_artf[:,0]
     aux = belt_artf[nx - 2::(nx - 1),1] # Aux takes every value starting from position nx - 2
                                         # in the position multiple of nx - 1
@@ -173,6 +207,14 @@ def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1)
 # that have nx points
 # Also, ny shouldn't be needed since we are not looking at the y direction expicitly
 def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        belt_artf: connectivity of the artificial boundaries
+        J: total number of subdivisions of the domain
+    Output: 
+        crs_matrix: the local boundary restiction matrix C_j
+    """
     assert j >= 0 and j < J
     if j == 0:
         cols = np.arange(0, nx)
@@ -190,6 +232,15 @@ def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
 #############################################################################
 
 def Aj_matrix(vtxj, eltj, beltj_phys, k):
+    """
+    Input:
+        vtxj: vertex of the j-th subdivision
+        eltj: connectivity of the triangles in the j-th subdivision
+        belt_phys: connectivity of the physical boundaries
+        k: wavenumber 
+    Output: 
+        crs_matrix: the local problem matrix A_j
+    """
     Mj = mass(vtxj, eltj) # mass matrix related to Omega_j
     Mbj = mass(vtxj, beltj_phys) # mass matrix related to the physical boundary of Omega_j (does not include artificial boundary)
     Kj = stiffness(vtxj, eltj)
@@ -199,6 +250,15 @@ def Aj_matrix(vtxj, eltj, beltj_phys, k):
 # This should be the correct implementation of Tj_matrix, since Tj is defined on the skeleton of the mesh
 # and by defining it as Bj.T @ Mb @ Bj we are giving it dimention of (Omega_j)^2
 def Tj_matrix(vtxj, beltj_artf, Bj, k):
+    """
+    Input:
+        vtxj: vertex of the j-th subdivision
+        belt_phys: connectivity of the physical boundaries
+        Bj: boundary restriction matrix
+        k: wavenumber 
+    Output: 
+        crs_matrix: the local transmssion matrix T_j
+    """
     Mb = mass(vtxj, beltj_artf)
     Tj = csr_matrix(k * (Bj @ Mb @ Bj.T))
     return Tj
@@ -229,6 +289,14 @@ def Tj_matrix_probably_wrong(vtxj, beltj_artf, Bj, k, j, J):
     return Tj
 
 def Sj_factorization(Aj, Tj, Bj):
+    """
+    Input:
+        Aj: local problem matrix 
+        Tj: local trasmission matrix
+        Bj: local boundary restricition matrix
+    Output: 
+        spla.splu: LU factorisatio of Aj - i Bj^T Tj Bj
+    """
     # CSC format is more efficient for direct solvers
     Aj_csc = csc_matrix(Aj)
     Tj_csc = csc_matrix(Tj)
@@ -237,6 +305,15 @@ def Sj_factorization(Aj, Tj, Bj):
 
 # don't understand why ps, I put sp
 def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
+    """
+    Input:
+        vtxj: vertex of the j-th subdivision
+        eltj: connectivity of the triangles in the j-th subdomain
+        sp: ?
+        k: wavenumber 
+    Output: 
+        crs_matrix: the local transmssion matrix T_j
+    """
     Mj = mass(vtxj, eltj)
     return Mj @ point_source(sp, k)(vtxj)
 
@@ -245,9 +322,17 @@ def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
 #############################################################################
 
 def S_operator(nx, ny, Lx, Ly, J, x):
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        Lx, Ly: lenghts of the domain in the x and y direction
+        j: subdivision to be considered
+        J: total number of subdivisions of the domain
+        x: interface unknown 
+    Output: 
+        y: action of the operator S on x 
+    """
     # y = Sx
-    dimS = 2*nx*(J-1)
-    S = csr_matrix((dimS,dimS), dtype=np.complex128)
     y = x.copy() # by doing this I am already considering the identity in S
     for j in range(J):
         vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
@@ -259,10 +344,17 @@ def S_operator(nx, ny, Lx, Ly, J, x):
         Cj = Cj_matrix(nx, ny, j, J)
         xj = Cj @ x
         y += Cj.T @  (2j * Bj @ Sj.solve(Bj.T @ Tj @ xj))
-
-    return S
+    return y
 
 def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours, thus x has dimention 2*nx*(J-1)
+    """
+    Input:
+        nx: number of points in the x direction
+        J: total number of subdivisions of the domain
+        x: interface unknown 
+    Output: 
+        x: action of the operator Pi on x itself
+    """
     for i in range (nx, (2*J - 3)*nx,2*nx):
         aux = x[i: i + nx]
         x[i: i + nx] = x[i + nx: i + 2*nx]
@@ -281,6 +373,16 @@ def Pi_operator(nx, J): # This isn't needed probably
     
 # This isn't b, but the vector g (I still don't know if it makes more sense like this)
 def b_vector(nx, ny, Lx, Ly, sp, k, J):
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        Lx, Ly: lenghts of the domain in the x and y direction
+        sp: source points
+        k: wavenumber
+        J: total number of subdivisions of the domain
+    Output: 
+        b: global right-hand side of the interface problem
+    """
     dimB = 2*nx*(J-1)
     b = np.zeros(dimB, dtype = np.complex128)
     for j in range(J):
@@ -290,7 +392,14 @@ def b_vector(nx, ny, Lx, Ly, sp, k, J):
         Cj = Cj_matrix(nx, ny, j, J)
         bj = bj_vector(vtxj, eltj, sp, k) # dim Omega_j
         bj_artf = Bj @ bj # this is bj at the artificial boundary
+        pi_bj_artf = Pi_operator(nx, J, bj_artf)
+        contribution = Cj.T @ pi_bj_artf
+        b += contribution
     return b
+
+def g():
+    # DA FARE?
+    return g
 
 #############################################################################
 
@@ -299,6 +408,20 @@ def b_vector(nx, ny, Lx, Ly, sp, k, J):
 #############################################################################
 
 def fixed_point(nx, ny, Lx, Ly, J, p0, w, tol = 1e-6, iter_max = 1000):
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        Lx, Ly: lenghts of the domain in the x and y direction
+        J: total number of subdivisions of the domain
+        p0: initial estimate
+        w: relaxation paramter 
+        tol: tollerance (automatically fixed to 1e-6 if not specified)
+        iter_max: maximum number of iterations (automatically fixed to 1000 if not specified)
+    Output: 
+        p_next: final iteration
+        iter: number of computed iterations
+        err: error at the final iteration
+    """
     assert w > 0 and w < 1
     err = 1
     iter = 0
@@ -313,8 +436,7 @@ def fixed_point(nx, ny, Lx, Ly, J, p0, w, tol = 1e-6, iter_max = 1000):
         err = np.linalg.norm(p_next - p_0, ord=2)
         p_0 = p_next
         iter += 1
-    
-    
+
     return p_next, iter, err
 
 #############################################################################
@@ -322,11 +444,29 @@ def fixed_point(nx, ny, Lx, Ly, J, p0, w, tol = 1e-6, iter_max = 1000):
 #############################################################################
 
 def linear_op(nx, ny, Lx, Ly, J, x):
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        Lx, Ly: lenghts of the domain in the x and y direction
+        J: total number of subdivisions of the domain
+        x: interface unknown
+    Output: 
+        I + Pi*S: matrix constructed for the linear system of the interface problem
+    """
     return x + Pi_operator(nx, J, S_operator(nx, ny, Lx, Ly, J, x))
 
-
-
 def MyGmres(nx, ny, Lx, Ly, J, p0, tol = 1e-12):
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        Lx, Ly: lenghts of the domain in the x and y direction
+        J: total number of subdivisions of the domain
+        p0: initial estimate
+        tol: tollerance (automatically fixed to 1e-12 if not specified)
+    Output: 
+        y:  solution od the interface problem using GMRES
+        Myresiduals: residuals
+    """
     A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec = linear_op, dtype = np.complex128)
     #TODO: implement g
     Myresiduals = []
@@ -340,6 +480,18 @@ def MyGmres(nx, ny, Lx, Ly, J, p0, tol = 1e-12):
 #############################################################################
 
 def uj_solution(nx, ny, Lx, Ly, j, J, sp, k, x): # x is the solution of the linear system
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        Lx, Ly: lenghts of the domain in the x and y direction
+        j: subdivision to be considered
+        J: total number of subdivisions of the domain
+        sp: ?
+        k: wavenumber
+        x: interface unknown
+    Output: 
+        u: solution of the system Sj u = (bj + Bj.T @ Tj @ xj)
+    """
     vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
     beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
     Bj = Bj_matrix(nx, ny, beltj_artf, J)
@@ -350,6 +502,36 @@ def uj_solution(nx, ny, Lx, Ly, j, J, sp, k, x): # x is the solution of the line
     bj = bj_vector(vtxj, eltj, sp, k)
     xj = Cj @ x
     return Sj.solve(bj + Bj.T @ Tj @ xj)
+
+#############################################################################
+##                                Plots                                    ##
+#############################################################################
+
+def plot_residuals(fixed_point_residuals, gmres_residuals):
+    """
+    Input: 
+        fixed_point_residuals, gmres_residuals: residuals obtained using the two methods
+    Output:
+        plt: plot of the concergence of the residuals
+    """
+    if len(fixed_point_residuals) == 0 or len(gmres_residuals) == 0:
+        raise ValueError("The residuals cannot be of length 0.")
+    
+    # Number of iterations
+    iterations_fp = np.arange(1, len(fixed_point_residuals) + 1)
+    iterations_gmres = np.arange(1, len(gmres_residuals) + 1)
+
+    plt.figure(figsize=(10, 6))
+    plt.semilogy(iterations_fp, fixed_point_residuals, label="Fixed Point Method", marker='o')
+    plt.semilogy(iterations_gmres, gmres_residuals, label="GMRES", marker='x')
+    
+    plt.xlabel("Number of iterations")
+    plt.ylabel("Residual (log scale)")
+    plt.title("Convergence of residuals")
+    plt.legend()
+    plt.grid(True, which="both", linestyle="--", linewidth=0.5)
+    plt.show()
+
 
 ## Ly has to be a multiple of J
 
