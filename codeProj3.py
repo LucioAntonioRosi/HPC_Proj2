@@ -295,7 +295,7 @@ def Sj_factorization(Aj, Tj, Bj):
         Tj: local trasmission matrix
         Bj: local boundary restricition matrix
     Output: 
-        spla.splu: LU factorisatio of Aj - i Bj^T Tj Bj
+        spla.splu: LU factorisation of Aj - i Bj^T Tj Bj
     """
     # CSC format is more efficient for direct solvers
     Aj_csc = csc_matrix(Aj)
@@ -312,7 +312,7 @@ def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
         sp: ?
         k: wavenumber 
     Output: 
-        crs_matrix: the local transmssion matrix T_j
+        bj: local right-hand side of the interface problem
     """
     Mj = mass(vtxj, eltj)
     return Mj @ point_source(sp, k)(vtxj)
@@ -360,19 +360,9 @@ def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours,
         x[i: i + nx] = x[i + nx: i + 2*nx]
         x[i + nx: i + 2*nx] = aux
     return x
-
-def Pi_operator(nx, J): # This isn't needed probably
-    cols = np.arange(0, 2*(J-1)*nx)
-    for i in range (nx, (2*J - 3)*nx,2*nx):
-        aux = cols[i: i + nx]
-        cols[i: i + nx] = cols[i + nx: i + 2*nx]
-        cols[i + nx: i + 2*nx] = aux
-    rows = np.arange(0, 2*(J-1)*nx)
-    data = np.ones_like(cols)
-    return csr_matrix((data, (rows, cols)), shape=(2*(J-1)*nx, 2*(J-1)*nx))
     
 # This isn't b, but the vector g (I still don't know if it makes more sense like this)
-def b_vector(nx, ny, Lx, Ly, sp, k, J):
+def g_vector(nx, ny, Lx, Ly, sp, k, J):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -381,25 +371,26 @@ def b_vector(nx, ny, Lx, Ly, sp, k, J):
         k: wavenumber
         J: total number of subdivisions of the domain
     Output: 
-        b: global right-hand side of the interface problem
+        g: global right-hand side of the skeleton problem
     """
-    dimB = 2*nx*(J-1)
-    b = np.zeros(dimB, dtype = np.complex128)
+    dimg = 2*(J-1)*nx
+    g = np.zeros(dimg, dtype = np.complex128)
+
     for j in range(J):
         vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
-        _, beltj_artf = local_boundary(nx, ny, j, J)
-        Bj = Bj_matrix(nx, ny, belt_artf, J)
+        beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
+        Bj = Bj_matrix(nx, ny, beltj_artf, J)
         Cj = Cj_matrix(nx, ny, j, J)
-        bj = bj_vector(vtxj, eltj, sp, k) # dim Omega_j
-        bj_artf = Bj @ bj # this is bj at the artificial boundary
-        pi_bj_artf = Pi_operator(nx, J, bj_artf)
-        contribution = Cj.T @ pi_bj_artf
-        b += contribution
-    return b
+        Aj = Aj_matrix(vtxj, eltj, beltj_phys, k)
+        bj = bj_vector(vtxj, eltj, sp, k) 
+        Tj = Tj_matrix(vtxj, beltj_artf, Bj, k)
+        Sj = Sj_factorization(Aj, Tj, Bj)
+        g += Cj.T @ (Bj @ Sj.solve(bj))
 
-def g():
-    # DA FARE?
+    g = -2j * Pi_operator(nx, J, g)
     return g
+
+
 
 #############################################################################
 
@@ -407,7 +398,7 @@ def g():
 ##                      Fixed Point Method                                 ##
 #############################################################################
 
-def fixed_point(nx, ny, Lx, Ly, J, p0, w, tol = 1e-6, iter_max = 1000):
+def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 1000):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -423,39 +414,33 @@ def fixed_point(nx, ny, Lx, Ly, J, p0, w, tol = 1e-6, iter_max = 1000):
         err: error at the final iteration
     """
     assert w > 0 and w < 1
-    err = 1
+    residuals = []
+    errs = []
     iter = 0
-    b = b_vector(nx, ny, Lx, Ly, sp, k, J)
-    #TODO: implement g
-    assert len(p0) == len(g)  and len(p0) == len(g)
+    g = g_vector(nx, ny, Lx, Ly, sp, k, J)
+    assert len(p0) == len(g)
     p_next = np.zeros_like(p0)
     p_0 = p0.copy()
-    
-    while (err > tol and iter < iter_max):
-        p_next = (1 - w)*p_0 - w*Pi_operator(nx,J,S_operator(nx, ny, Lx, Ly, J, p_0)) + w*g
+    residuals = np.append(residuals, np.linalg.norm(p_0 - g, ord=2))
+    while (iter < iter_max):
+        PiSp0 = Pi_operator(nx,J,S_operator(nx, ny, Lx, Ly, J, p_0))
+        p_next = (1 - w)*p_0 - w*PiSp0  + w*g
         err = np.linalg.norm(p_next - p_0, ord=2)
+        errs = np.append(errs,err)
         p_0 = p_next
         iter += 1
+        if err < tol:
+            break
 
-    return p_next, iter, err
+    return p_next, iter, errs
 
 #############################################################################
 ##                          GMRES Method                                   ##
 #############################################################################
 
-def linear_op(nx, ny, Lx, Ly, J, x):
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        Lx, Ly: lenghts of the domain in the x and y direction
-        J: total number of subdivisions of the domain
-        x: interface unknown
-    Output: 
-        I + Pi*S: matrix constructed for the linear system of the interface problem
-    """
-    return x + Pi_operator(nx, J, S_operator(nx, ny, Lx, Ly, J, x))
 
-def MyGmres(nx, ny, Lx, Ly, J, p0, tol = 1e-12):
+
+def MyGmres(nx, ny, Lx, Ly, sp, k, J, p0, tol = 1e-12):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -467,8 +452,11 @@ def MyGmres(nx, ny, Lx, Ly, J, p0, tol = 1e-12):
         y:  solution od the interface problem using GMRES
         Myresiduals: residuals
     """
-    A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec = linear_op, dtype = np.complex128)
-    #TODO: implement g
+    def linear_op(nx, ny, Lx, Ly, J, x):
+        return x + Pi_operator(nx, J, S_operator(nx, ny, Lx, Ly, J, x))
+    
+    A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec =lambda x: linear_op(nx, ny, Lx, Ly, J ,x), dtype = np.complex128)
+    g = g_vector(nx, ny, Lx, Ly, sp, k, J)
     Myresiduals = []
     def callback2(x):
         Myresiduals.append(x)
@@ -545,14 +533,8 @@ ns = 8           # Number of point sources + random position and weight below
 j = 1
 J = 4
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
-x  = np.ones(2*nx*(J-1), dtype=np.complex128)
-S = S_operator(nx, ny, Lx, Ly, J, x)
-vtx, elt = local_mesh(nx, ny, Lx, Ly,j,J)
-belt_phys, belt_artf = local_boundary(nx, ny,j,J)
-Aj = Aj_matrix(vtx, elt, belt_phys, k)
-Bj = Bj_matrix(nx, ny, belt_artf, J)
-Cj = Cj_matrix(nx, ny, j, J)
-Tj = Tj_matrix(vtx, belt_artf, Bj, k)
+x1  = np.ones(2*nx*(J-1), dtype=np.complex128)
+
 vtx, elt = mesh(nx, ny, Lx, Ly)
 belt = boundary(nx, ny)
 M = mass(vtx, elt)
@@ -574,8 +556,8 @@ print("Total number of GMRES iterations = ", len(residuals))
 print("Direct vs GMRES error            = ", la.norm(y - x))
 
 ## Plots
-# plot_mesh(vtx, elt) # slow for fine meshes
-# plt.show()
+plot_mesh(vtx, elt) # slow for fine meshes
+plt.show()
 plot_mesh(vtx, elt, np.real(x))
 plt.colorbar()
 plt.show()
@@ -584,3 +566,7 @@ plt.colorbar()
 plt.show()
 plt.semilogy(residuals)
 plt.show()
+
+y_fixed, iter, err = fixed_point(nx, ny, Lx, Ly, sp, k, J, x1, 0.5)
+y_gmres, My_residuals = MyGmres(nx, ny, Lx, Ly, sp, k, J, x1)
+plot_residuals(err, My_residuals)
