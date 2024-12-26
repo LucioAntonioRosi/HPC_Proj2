@@ -90,14 +90,14 @@ def point_source(sp, k):
         return v
     return ps 
 
-def plot_mesh(vtx, elt, val=None, **kwargs):
+def plot_mesh(vtx, elt, val=None, vmin=None, vmax=None, **kwargs):
     trig = mtri.Triangulation(vtx[:,0], vtx[:,1], elt)
     if val is None:
         plt.triplot(trig, **kwargs)
     else:
         plt.tripcolor(trig, val,
                       shading='gouraud',
-                      cmap=cm.jet, **kwargs)
+                      cmap=cm.jet, vmin=vmin, vmax=vmax, **kwargs)
     plt.axis('equal')
 
 #############################################################################
@@ -134,24 +134,14 @@ def local_boundary(nx, ny, j, J):
     Output: 
         beltj_phys, beltj_artf: connectivity of the physical and artificial boundaries
     """
-    # I am keeping the arrays with the 2 in the name because I am not sure if I need them,
-    # but probably the right ones are the ones without 2
     assert j >= 0 and j < J
     endj = (ny - 1) // J
-    bottom2 = np.hstack((np.arange(endj*j*nx,j*endj*nx + nx - 1,1)[:,na],
-                        np.arange(endj*j*nx + 1,endj*j*nx + nx,1)[:,na]))
     bottom = np.hstack((np.arange(0,nx - 1,1)[:,na],
                         np.arange(1,nx,1)[:,na]))
-    top2    = np.hstack((np.arange(nx*(j + 1)*endj,nx*(j + 1)*endj + nx - 1 ,1)[:,na],
-                        np.arange(nx*(j + 1)*endj + 1,nx*(j + 1)*endj + nx,1)[:,na]))
     top    = np.hstack((np.arange(nx*endj,nx*(endj + 1) -1,1)[:,na],
                         np.arange(nx*endj + 1,nx*(endj + 1),1)[:,na]))
-    left2   = np.hstack((np.arange(endj*j*nx,endj*(j + 1)*nx,nx)[:,na],
-                        np.arange(endj*j*nx + nx,endj*(j + 1)*nx + nx,nx)[:,na]))
     left   = np.hstack((np.arange(0,nx*endj,nx)[:,na],
                         np.arange(nx,nx*(endj + 1),nx)[:,na]))
-    right2  = np.hstack((np.arange(endj*j*nx + nx - 1,endj*(j + 1)*nx,nx)[:,na],
-                        np.arange(endj*j*nx + 2*nx - 1,(endj*(j + 1) + 1)*nx,nx)[:,na]))
     right  = np.hstack((np.arange(nx - 1,nx*endj,nx)[:,na],
                         np.arange(2*nx - 1,nx*(endj + 1),nx)[:,na]))
     if j == 0:
@@ -201,7 +191,7 @@ def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1)
     cols = np.sort(cols)
     rows = np.arange(len(cols))
     data = np.ones_like(cols)
-    return csr_matrix((data, (rows,cols)), shape=(len(rows),nx * (((ny - 1) // J) + 1)))
+    return csr_matrix((data, (rows,cols)), shape=(len(rows), nx*(((ny - 1) // J) + 1)))
 
 # S has dimention 2*nx*(J-1) since every artificial surface has 2*nx points a part from the first and last
 # that have nx points
@@ -263,31 +253,6 @@ def Tj_matrix(vtxj, beltj_artf, Bj, k):
     Tj = csr_matrix(k * (Bj @ Mb @ Bj.T))
     return Tj
 
-# I added j and J because the implementation of the matrix is different for the first and last domain
-def Tj_matrix_probably_wrong(vtxj, beltj_artf, Bj, k, j, J):
-    dim1 = np.size(Bj, 0)
-    dim2 = np.size(Bj, 1)
-    Tj = csr_matrix((dim2, dim2), dtype=np.float64)
-    Mb = mass(vtxj, beltj_artf) # mass matrix related to the artificial boundary of Omega_j
-
-    T = Bj @ Mb @ Bj.T
-    if j == 0:
-        indexes = np.arange(dim2 - dim1, dim2)
-        Mb = csr_matrix(Mb[indexes, :][:, indexes])
-    elif j == J - 1:
-        indexes = np.arange(dim1)
-        Mb = csr_matrix(Mb[indexes, :][:, indexes])
-    else:
-        dim1 = dim1 // 2
-        indexes1 = np.arange(dim1)
-        indexes2 = np.arange(dim2 - dim1, dim2)
-        Mb1 = csr_matrix(Mb[indexes1, :][:, indexes1])
-        Mb2 = csr_matrix(Mb[indexes2, :][:, indexes2])
-        Mb = block_diag((Mb1, Mb2), format='csr')
-
-    Tj = csr_matrix(k * (Bj.T @ Mb @ Bj))
-    return Tj
-
 def Sj_factorization(Aj, Tj, Bj):
     """
     Input:
@@ -302,6 +267,7 @@ def Sj_factorization(Aj, Tj, Bj):
     Tj_csc = csc_matrix(Tj)
     Bj_csc = csc_matrix(Bj)
     return spla.splu(Aj_csc - 1j * (Bj_csc.T @ Tj_csc @ Bj_csc))
+    # return spla.splu(Aj - 1j * (Bj.T @ Tj @ Bj))
 
 # don't understand why ps, I put sp
 def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
@@ -524,23 +490,23 @@ def plot_residuals(fixed_point_residuals, gmres_residuals):
 ## Ly has to be a multiple of J
 
 ## Example resolution of model problem
-Lx = 4           # Length in x direction
-Ly = 4           # Length in y direction
-nx = 1 + Lx * 2 # Number of points in x direction
-ny = 1 + Ly * 5 # Number of points in y direction
+Lx = 16          # Length in x direction
+Ly = 16           # Length in y direction
+nx = 1 + Lx * 16 # Number of points in x direction
+ny = 1 + Ly * 16 # Number of points in y direction
 k = 16           # Wavenumber of the problem
 ns = 8           # Number of point sources + random position and weight below
 j = 1
-J = 4
+J = 16
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
-x1  = np.ones(2*nx*(J-1), dtype=np.complex128)
+x1 = np.zeros(2*nx*(J-1), dtype=np.complex128)
 
 vtx, elt = mesh(nx, ny, Lx, Ly)
 belt = boundary(nx, ny)
 M = mass(vtx, elt)
 Mb = mass(vtx, belt) # The dimentions of Mb are the same as the ones of M, because of the function mass
 K = stiffness(vtx, elt)
-A = K - k**2 * M - 1j*k*Mb      # matrix of linear system 
+A = K - k**2 * M - 1j*k*Mb      # matrix of linear system
 b = M @ point_source(sp,k)(vtx) # linear system RHS (source term)
 x = spla.spsolve(A, b)          # solution of linear system via direct solver
 
@@ -556,17 +522,38 @@ print("Total number of GMRES iterations = ", len(residuals))
 print("Direct vs GMRES error            = ", la.norm(y - x))
 
 ## Plots
-plot_mesh(vtx, elt) # slow for fine meshes
-plt.show()
-plot_mesh(vtx, elt, np.real(x))
-plt.colorbar()
-plt.show()
-plot_mesh(vtx, elt, np.abs(x))
-plt.colorbar()
-plt.show()
-plt.semilogy(residuals)
-plt.show()
+# plot_mesh(vtx, elt) # slow for fine meshes
+# plt.show()
+# plot_mesh(vtx, elt, np.real(x))
+# plt.colorbar()
+# plt.show()
+# plot_mesh(vtx, elt, np.abs(x))
+# plt.colorbar()
+# plt.show()
+# plt.semilogy(residuals)
+# plt.show()
 
 y_fixed, iter, err = fixed_point(nx, ny, Lx, Ly, sp, k, J, x1, 0.5)
 y_gmres, My_residuals = MyGmres(nx, ny, Lx, Ly, sp, k, J, x1)
+x_sol = []
+for j in range(J):
+    x_sol = np.append(x_sol,uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres))
+    if j != J - 1:
+        # take out the last nx points of the previous solution
+        x_sol = x_sol[:-nx]
+
+print("Direct vs GMRES error for subproblem       = ", la.norm(x_sol - x))
 plot_residuals(err, My_residuals)
+
+# Determine the common color range
+vmin = min(np.min(np.real(x)), np.min(np.real(x_sol)))
+vmax = max(np.max(np.real(x)), np.max(np.real(x_sol)))
+
+plt.figure(figsize=(10, 6))
+plt.subplot(1, 2, 1)
+plot_mesh(vtx, elt, np.real(x),vmin,vmax)
+plt.colorbar()
+plt.subplot(1, 2, 2)
+plot_mesh(vtx, elt, np.real(x_sol),vmin,vmax)
+plt.colorbar()
+plt.show()
