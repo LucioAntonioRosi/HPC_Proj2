@@ -6,6 +6,7 @@ na = np.newaxis
 import numpy.linalg as la
 import scipy.sparse.linalg as spla
 from scipy.sparse import csr_matrix, csc_matrix, block_diag #Added block_diag for Tj_matrix
+import mpi4py.MPI as MPI
 
 from matplotlib import cm
 import matplotlib.pyplot as plt
@@ -300,11 +301,12 @@ def S_operator(J, x, Bj_list, Sj_list, Cj_list, Tj_list):
     """
     # y = Sx
     y = np.zeros_like(x)
-    y += x # by doing this I am already considering the identity in S
+    assert len(x) == 2*(J-1)*nx
     for j in range(J): 
         xj = Cj_list[j] @ x
         y_local = 2j * Bj_list[j] @ Sj_list[j].solve(Bj_list[j].T @ Tj_list[j] @ xj)
         y += Cj_list[j].T @ y_local
+        y += Cj_list[j].T @ xj
     return y
 
 def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours, thus x has dimention 2*nx*(J-1)
@@ -348,7 +350,7 @@ def g_vector(J, Sj_list, Cj_list, Bj_list, bj_list):
 ##                            Helper function                              ##
 #############################################################################
 
-def create_matrices(nx, ny, Lx, Ly, sp, k, J):
+def create_matrices(nx, ny, Lx, Ly, sp, k, J, displacement = 0, n_rows = J):
     vtxj_list = []
     eltj = []
     Aj_list = []
@@ -358,7 +360,8 @@ def create_matrices(nx, ny, Lx, Ly, sp, k, J):
     Sj_list = []
     Rj_list = []
     bj_list = []
-    for j in range(J):
+    
+    for j in range(displacement, n_rows + displacement):
         vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
         beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
         Bj = Bj_matrix(nx, ny, beltj_artf, J)
@@ -376,6 +379,7 @@ def create_matrices(nx, ny, Lx, Ly, sp, k, J):
         Sj_list.append(Sj)
         Rj_list.append(Rj)
         bj_list.append(bj)
+
     return vtxj_list, eltj, Aj_list, Tj_list, Bj_list, Cj_list, Sj_list, Rj_list, bj_list
 
 def print_matrices(Tj_list, Bj_list, Cj_list):
@@ -426,7 +430,9 @@ def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000)
     residuals = []
     errs = []
     iter = 0
-    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
+
+
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, 0, J)
     g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list)
     #print_matrices(Tj_list, Bj_list, Cj_list)
     assert len(p0) == len(g)
@@ -449,6 +455,69 @@ def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000)
 
     return p_next, iter, residuals
 
+def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000):
+    """
+    Input:
+        nx, ny: number of points in the x and y directions
+        Lx, Ly: lenghts of the domain in the x and y direction
+        J: total number of subdivisions of the domain
+        p0: initial estimate
+        w: relaxation paramter 
+        tol: tollerance (automatically fixed to 1e-6 if not specified)
+        iter_max: maximum number of iterations (automatically fixed to 1000 if not specified)
+    Output: 
+        p_next: final iteration
+        iter: number of computed iterations
+        err: error at the final iteration
+    """
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    assert w > 0 and w < 1
+    residuals = []
+    errs = []
+    iter = 0
+    n_p0 = 0
+    if rank == 0:
+        n_p0 = len(p0)
+    n_p0 = comm.bcast(n_p0, root=0)
+
+    rows_per_process = [(J // size + (1 if i < J % size else 0)) for i in range(size)] # Number of rows each processor gets
+    displacements = [sum(rows_per_process[:i]) for i in range(size)]  # Displacement for each processor
+
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, displacements[rank], rows_per_process[rank])
+    g = None
+    p_next = None
+    p_0 = None
+    if rank == 0:
+        g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list)
+        assert len(p0) == len(g)
+
+        p_next = np.zeros_like(p0)
+        p_0 = p0.copy()
+    
+    while (iter < iter_max):
+        # This is just the local y for each rank
+
+        y_local = S_operator(J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)
+        y = None
+
+        comm.reduce(y_local, y, op=MPI.SUM, root=0)
+        if rank == 0:
+            PiSp0 = Pi_operator(nx,J,y)
+        
+        comm.Scatterv([PiSp0,rows_per_process,displacements,MPI.DOUBLE], y_local, root=0)
+        p_next = (1 - w)*p_0 - w*PiSp0  + w*g
+        err = np.linalg.norm(p_next - p_0, ord=2)
+        residual = np.linalg.norm(p_0 + Pi_operator(nx,J,
+        S_operator(J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)) - g, ord=2)
+        errs = np.append(errs,err)
+        residuals = np.append(residuals,residual)
+        p_0 = p_next.copy()
+        iter += 1
+        if residual < tol:
+            break
+
+    return p_next, iter, residuals
 #############################################################################
 ##                          GMRES Method                                   ##
 #############################################################################
@@ -470,12 +539,14 @@ def MyGmres(nx, ny, Lx, Ly, sp, k, J, tol = 1e-12):
         return x + Pi_operator(nx, J, y) 
    
 
-    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, 0, J)
     A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec =lambda x: linear_op(nx, J ,x, Bj_list, Sj_list, Cj_list, Tj_list), dtype = np.complex128)
     g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list)
     Myresiduals = []
+
     def callback2(x):
         Myresiduals.append(x)
+
     y, _ = spla.gmres(A, g, rtol = tol, callback=callback2, callback_type='pr_norm')
     return y, Myresiduals
 
@@ -541,6 +612,10 @@ def plot_residuals(fixed_point_residuals, gmres_residuals):
 
 
 ## Example resolution of model problem
+comm = MPI.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()
+
 Lx = 2        # Length in x direction
 Ly = 2          # Length in y direction
 nx = 1 + Lx * 16 # Number of points in x direction
