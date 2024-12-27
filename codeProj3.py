@@ -249,8 +249,8 @@ def Tj_matrix(vtxj, beltj_artf, Bj, k):
     Output: 
         crs_matrix: the local transmssion matrix T_j
     """
-    Mb = mass(vtxj, beltj_artf)
-    Tj = csr_matrix(k * (Bj @ Mb @ Bj.T))
+    Mbj = mass(vtxj, beltj_artf)
+    Tj = csr_matrix(k * (Bj @ Mbj @ Bj.T))
     return Tj
 
 def Sj_factorization(Aj, Tj, Bj):
@@ -267,7 +267,7 @@ def Sj_factorization(Aj, Tj, Bj):
     Tj_csc = csc_matrix(Tj)
     Bj_csc = csc_matrix(Bj)
     return spla.splu(Aj_csc - 1j * (Bj_csc.T @ Tj_csc @ Bj_csc))
-    # return spla.splu(Aj - 1j * (Bj.T @ Tj @ Bj))
+
 
 # don't understand why ps, I put sp
 def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
@@ -287,7 +287,7 @@ def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
 ##                             Global operators                            ##
 #############################################################################
 
-def S_operator(nx, ny, Lx, Ly, J, x, Bj_list, Sj_list, Cj_list, Tj_list):
+def S_operator(J, x, Bj_list, Sj_list, Cj_list, Tj_list):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -299,9 +299,12 @@ def S_operator(nx, ny, Lx, Ly, J, x, Bj_list, Sj_list, Cj_list, Tj_list):
         y: action of the operator S on x 
     """
     # y = Sx
-    y = x.copy() # by doing this I am already considering the identity in S
+    y = np.zeros_like(x)
+    y += x # by doing this I am already considering the identity in S
     for j in range(J): 
-        y += Cj_list[j].T @  (2j * Bj_list[j] @ Sj_list[j].solve(Bj_list[j].T @ Tj_list[j] @ Cj_list[j] @ x))
+        xj = Cj_list[j] @ x
+        y_local = 2j * Bj_list[j] @ Sj_list[j].solve(Bj_list[j].T @ Tj_list[j] @ xj)
+        y += Cj_list[j].T @ y_local
     return y
 
 def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours, thus x has dimention 2*nx*(J-1)
@@ -313,14 +316,14 @@ def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours,
     Output: 
         x: action of the operator Pi on x itself
     """
-    for i in range (nx, (2*J - 3)*nx,2*nx):
-        aux = x[i: i + nx]
-        x[i: i + nx] = x[i + nx: i + 2*nx]
-        x[i + nx: i + 2*nx] = aux
-    return x
+    x1 = x.copy()
+    for i in range (0, (2*J - 1)*nx,2*nx):
+        x1[i: i + nx] = x[i + nx: i + 2*nx].copy()
+        x1[i + nx: i + 2*nx] = x[i: i + nx].copy()
+    return x1
     
 # This isn't b, but the vector g (I still don't know if it makes more sense like this)
-def g_vector(nx, ny, Lx, Ly, sp, k, J, Sj_list, Cj_list, Bj_list, bj_list):
+def g_vector(J, Sj_list, Cj_list, Bj_list, bj_list):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -337,7 +340,7 @@ def g_vector(nx, ny, Lx, Ly, sp, k, J, Sj_list, Cj_list, Bj_list, bj_list):
     for j in range(J):
         g += Cj_list[j].T @ (Bj_list[j] @ Sj_list[j].solve(bj_list[j]))
 
-    g = -2j * Pi_operator(nx, J, g)
+    g = -2j * Pi_operator(nx, J, g.copy())
     return g
 
 
@@ -375,11 +378,36 @@ def create_matrices(nx, ny, Lx, Ly, sp, k, J):
         bj_list.append(bj)
     return vtxj_list, eltj, Aj_list, Tj_list, Bj_list, Cj_list, Sj_list, Rj_list, bj_list
 
+def print_matrices(Tj_list, Bj_list, Cj_list):
+    """
+    Function to print or visualize the matrices in the provided lists.
+    """
+    for i, Tj in enumerate(Tj_list):
+        print(f"Tj[{i}]:\n{Tj.toarray()}\n")
+        plt.figure(figsize=(8, 6))
+        plt.spy(Tj, markersize=5)
+        plt.title(f'Sparsity Pattern of Tj[{i}]')
+        plt.show()
+
+    for i, Bj in enumerate(Bj_list):
+        print(f"Bj[{i}]:\n{Bj.toarray()}\n")
+        plt.figure(figsize=(8, 6))
+        plt.spy(Bj, markersize=5)
+        plt.title(f'Sparsity Pattern of Bj[{i}]')
+        plt.show()
+
+    for i, Cj in enumerate(Cj_list):
+        print(f"Cj[{i}]:\n{Cj.toarray()}\n")
+        plt.figure(figsize=(8, 6))
+        plt.spy(Cj, markersize=5)
+        plt.title(f'Sparsity Pattern of Cj[{i}]')
+        plt.show()
+
 #############################################################################
 ##                      Fixed Point Method                                 ##
 #############################################################################
 
-def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 1000):
+def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -399,30 +427,33 @@ def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 1000):
     errs = []
     iter = 0
     _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
-    g = g_vector(nx, ny, Lx, Ly, sp, k, J, Sj_list, Cj_list, Bj_list, bj_list)
+    g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list)
+    #print_matrices(Tj_list, Bj_list, Cj_list)
     assert len(p0) == len(g)
     p_next = np.zeros_like(p0)
     p_0 = p0.copy()
-    residuals = np.append(residuals, np.linalg.norm(p_0 - g, ord=2))
+    
     while (iter < iter_max):
-        PiSp0 = Pi_operator(nx,J,S_operator(nx, ny, Lx, Ly, J, p_0, Bj_list, Sj_list, Cj_list, Tj_list))
+        y = S_operator(J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)
+        PiSp0 = Pi_operator(nx,J,y)
         p_next = (1 - w)*p_0 - w*PiSp0  + w*g
         err = np.linalg.norm(p_next - p_0, ord=2)
+        residual = np.linalg.norm(p_0 + Pi_operator(nx,J,
+        S_operator(J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)) - g, ord=2)
         errs = np.append(errs,err)
-        p_0 = p_next
+        residuals = np.append(residuals,residual)
+        p_0 = p_next.copy()
         iter += 1
-        if err < tol:
+        if residual < tol:
             break
 
-    return p_next, iter, errs
+    return p_next, iter, residuals
 
 #############################################################################
 ##                          GMRES Method                                   ##
 #############################################################################
 
-
-
-def MyGmres(nx, ny, Lx, Ly, sp, k, J, p0, tol = 1e-12):
+def MyGmres(nx, ny, Lx, Ly, sp, k, J, tol = 1e-12):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -434,17 +465,18 @@ def MyGmres(nx, ny, Lx, Ly, sp, k, J, p0, tol = 1e-12):
         y:  solution od the interface problem using GMRES
         Myresiduals: residuals
     """
-    def linear_op(nx, ny, Lx, Ly, J, x, Bj_list, Sj_list, Cj_list, Tj_list):
-        return x + Pi_operator(nx, J, S_operator(nx, ny, Lx, Ly, J, x, Bj_list, Sj_list, Cj_list, Tj_list)) 
-    
+    def linear_op(nx, J, x, Bj_list, Sj_list, Cj_list, Tj_list):
+        y = S_operator(J, x, Bj_list, Sj_list, Cj_list, Tj_list)
+        return x + Pi_operator(nx, J, y) 
+   
 
     _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
-    A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec =lambda x: linear_op(nx, ny, Lx, Ly, J ,x, Bj_list, Sj_list, Cj_list, Tj_list), dtype = np.complex128)
-    g = g_vector(nx, ny, Lx, Ly, sp, k, J, Sj_list, Cj_list, Bj_list, bj_list)
+    A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec =lambda x: linear_op(nx, J ,x, Bj_list, Sj_list, Cj_list, Tj_list), dtype = np.complex128)
+    g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list)
     Myresiduals = []
     def callback2(x):
         Myresiduals.append(x)
-    y, _ = spla.gmres(A, g, x0 = p0, rtol = tol, callback=callback2, callback_type='pr_norm')
+    y, _ = spla.gmres(A, g, rtol = tol, callback=callback2, callback_type='pr_norm')
     return y, Myresiduals
 
 #############################################################################
@@ -507,17 +539,16 @@ def plot_residuals(fixed_point_residuals, gmres_residuals):
 
 ## Ly has to be a multiple of J
 
+
 ## Example resolution of model problem
-Lx = 4        # Length in x direction
-Ly = 6           # Length in y direction
-nx = 1 + Lx * 32 # Number of points in x direction
-ny = 1 + Ly * 32 # Number of points in y direction
+Lx = 2        # Length in x direction
+Ly = 2          # Length in y direction
+nx = 1 + Lx * 16 # Number of points in x direction
+ny = 1 + Ly * 16 # Number of points in y direction
 k = 16           # Wavenumber of the problem
 ns = 8           # Number of point sources + random position and weight below
-j = 1
-J = 3
+J = 4
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
-x1 = np.zeros(2*nx*(J-1), dtype=np.complex128)
 
 vtx, elt = mesh(nx, ny, Lx, Ly)
 belt = boundary(nx, ny)
@@ -551,33 +582,45 @@ print("Direct vs GMRES error            = ", la.norm(y - x))
 # plt.semilogy(residuals)
 # plt.show()
 
+x1 = np.ones(2*nx*(J-1), dtype=np.complex128)
 y_fixed, iter, err = fixed_point(nx, ny, Lx, Ly, sp, k, J, x1, 0.5)
-y_gmres, My_residuals = MyGmres(nx, ny, Lx, Ly, sp, k, J, x1)
-x_sol = []
+y_gmres, My_residuals = MyGmres(nx, ny, Lx, Ly, sp, k, J)
+x_fixed = []
+x_gmres = []
 for j in range(J):
-    x_sol = np.append(x_sol,uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres))
+    x_gmres = np.append(x_gmres,uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres))
+    x_fixed = np.append(x_fixed,uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_fixed))
     if j != J - 1:
         # take out the last nx points of the previous solution
-        x_sol = x_sol[:-nx]
+        x_gmres = x_gmres[:-nx]
+        x_fixed = x_fixed[:-nx]
 
-print("Direct vs GMRES error for subproblem       = ", la.norm(x_sol - x))
+print("Direct vs GMRES error for subproblem       = ", la.norm(x_gmres - x))
+print("Fixed Point vs GMRES error for subproblem  = ", la.norm(y_fixed - y_gmres))
 plot_residuals(err, My_residuals)
 
 # Determine the common color range
-vmin = min(np.min(np.real(x)), np.min(np.real(x_sol)))
-vmax = max(np.max(np.real(x)), np.max(np.real(x_sol)))
+vmin = min(np.min(np.real(x)), np.min(np.real(x_gmres)))
+vmax = max(np.max(np.real(x)), np.max(np.real(x_gmres)))
 
 plt.figure(figsize=(14, 8))
-plt.subplot(2, 3, 1)
+plt.subplot(1, 3, 1)
 plot_mesh(vtx, elt, np.real(x),vmin,vmax)
+plt.title("Direct solver")
 plt.colorbar()
-plt.subplot(2, 3, 2)
-plot_mesh(vtx, elt, np.real(x_sol),vmin,vmax)
+plt.subplot(1, 3, 2)
+plot_mesh(vtx, elt, np.real(x_gmres),vmin,vmax)
+plt.title("GMRES solver")
 plt.colorbar()
-for j in range(J):
-    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
-    plt.subplot(2, 3, 3+j)
-    plot_mesh(vtxj, eltj, np.real(uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres)),vmin,vmax)
-    plt.colorbar()
-
+plt.subplot(1, 3, 3)
+plot_mesh(vtx, elt, np.real(x_fixed),vmin,vmax)
+plt.title("Fixed Point solver")
+plt.colorbar()
 plt.show()
+#for j in range(J):
+#    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
+#    plt.subplot(2, 3, 3+j)
+#    plot_mesh(vtxj, eltj, np.real(uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres)))
+#    plt.colorbar()
+#
+#plt.show()
