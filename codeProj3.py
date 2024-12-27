@@ -443,25 +443,21 @@ def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000)
     """
     assert w > 0 and w < 1
     residuals = []
-    errs = []
     iter = 0
 
 
-    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, 0, J)
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
     g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list)
-    #print_matrices(Tj_list, Bj_list, Cj_list)
     assert len(p0) == len(g)
     p_next = np.zeros_like(p0)
     p_0 = p0.copy()
-    
     while (iter < iter_max):
         y = S_operator(nx, J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)
         PiSp0 = Pi_operator(nx,J,y)
         p_next = (1 - w)*p_0 - w*PiSp0  + w*g
-        err = np.linalg.norm(p_next - p_0, ord=2)
+        
         residual = np.linalg.norm(p_0 + Pi_operator(nx,J,
         S_operator(nx, J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)) - g, ord=2)
-        errs = np.append(errs,err)
         residuals = np.append(residuals,residual)
         p_0 = p_next.copy()
         iter += 1
@@ -505,46 +501,44 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
     values_displacements = [sum(values_per_process[:i]) for i in range(size)]
     
     _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, j_displacements[rank], j_per_process[rank])
-
-    local_g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list, j_per_process[rank])
+    
+    local_g = np.empty(values_per_process[rank], dtype=np.complex128)
     local_p0 = np.empty(values_per_process[rank], dtype=np.complex128)
     local_PiSp0 = np.empty(values_per_process[rank], dtype=np.complex128)
     local_p_next = np.empty(values_per_process[rank], dtype=np.complex128)
 
     if rank == 0:
+        _, _, _, T_list, B_list, C_list, S_list, _, b_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
         y = np.empty(n_p0,dtype=np.complex128)
-        g = np.empty(n_p0,dtype=np.complex128)
         PiSp0 = np.empty(n_p0,dtype=np.complex128)
         p_next = np.empty(n_p0,dtype=np.complex128)
-
-    comm.Reduce(local_g, g if rank == 0 else None, op=MPI.SUM, root = 0)
-    comm.Scatterv([p0 if rank == 0 else None, values_per_process,values_displacements,MPI.COMPLEX], local_p0, root=0)
-    comm.Scatterv([g if rank == 0 else None, values_per_process,values_displacements,MPI.COMPLEX], local_g, root=0)
+        g = np.empty(n_p0, dtype=np.complex128)
+        g = g_vector(J, S_list, C_list, B_list, b_list)
+        del _, T_list, B_list, C_list, S_list, b_list
     
-    print("rank: ",rank, "local_p0: ", local_p0)
-    if rank == 0:
-        print("p0:", p0)
-
-    comm.Gatherv(local_p0, [p0 if rank == 0 else None,values_per_process,values_displacements,MPI.COMPLEX], root=0)
+    comm.Scatterv([p0 if rank == 0 else None,[2*p for p in values_per_process],[2*v for v in values_displacements],MPI.COMPLEX], local_p0, root=0)
+    comm.Scatterv([g if rank == 0 else None, [2*p for p in values_per_process],[2*v for v in values_displacements],MPI.COMPLEX], local_g, root=0)
+    
+    comm.Gatherv(local_p0, [p0 if rank == 0 else None,[2*p for p in values_per_process],[2*v for v in values_displacements],MPI.COMPLEX], root=0)
 
     while (iter < iter_max):
+        
 
         local_y = S_operator(nx, J, local_p0, Bj_list, Sj_list, Cj_list, Tj_list, values_per_process[rank], values_displacements[rank], j_per_process[rank])
-        print("rank = ",rank, "local_y: ", local_y)
-        
-        if rank == 0:
-            print("y length: ",len(y))
-            print("values:", values_displacements, values_per_process)
-        
-        comm.Gatherv([local_y, MPI.COMPLEX], [y if rank == 0 else None ,([p for p in values_per_process],[v for v in values_displacements]),MPI.COMPLEX])
+        #local_y = S_operator(nx, J, local_p0, Bj_list[j_displacements[rank]:j_displacements[rank] + j_per_process[rank]], Sj_list[j_displacements[rank]:j_displacements[rank] + j_per_process[rank]], Cj_list[j_displacements[rank]:j_displacements[rank] + j_per_process[rank]], Tj_list[j_displacements[rank]:j_displacements[rank] + j_per_process[rank]], values_per_process[rank], values_displacements[rank], j_per_process[rank])
+
+        comm.Gatherv([local_y, MPI.COMPLEX], [y if rank == 0 else None ,([2*p for p in values_per_process],[2*v for v in values_displacements]),MPI.COMPLEX])
         
         if rank == 0:
             PiSp0 = Pi_operator(nx,J,y)
         
-        comm.Scatterv([PiSp0 if rank == 0 else None,values_per_process,values_displacements,MPI.COMPLEX], local_PiSp0, root=0)
+        comm.Scatterv([PiSp0 if rank == 0 else None,[2*p for p in values_per_process],[2*v for v in values_displacements],MPI.COMPLEX], local_PiSp0, root=0)
+        
         local_p_next = (1 - w)*local_p0 - w*local_PiSp0  + w*local_g
+        #print("iter:",iter, "rank:",rank,"local_pnext:",local_p_next)
         # We compute the residual at iteration iter - 1 since we already have the value of PiSp0
         local_residual = np.square(np.linalg.norm(local_p0 + local_PiSp0 - local_g, ord=2))
+        residual = np.empty(1,np.float64)
         comm.Allreduce(local_residual, residual, op=MPI.SUM)
         residual = np.sqrt(residual)
         if rank == 0:
@@ -554,8 +548,8 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
         if residual < tol:
             break
     
-    comm.Gatherv(local_p_next,[p_next if rank == 0 else None,values_per_process,values_displacements,MPI.COMPLEX],root=0)
-    return p_next, iter, residuals
+    comm.Gatherv(local_p_next,[p_next if rank == 0 else None,[2*p for p in values_per_process],[2*v for v in values_displacements],MPI.COMPLEX],root=0)
+    return p_next if rank == 0 else None, iter, residuals
 #############################################################################
 ##                          GMRES Method                                   ##
 #############################################################################
@@ -654,13 +648,13 @@ comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 size = comm.Get_size()
 
-Lx = 2        # Length in x direction
-Ly = 2        # Length in y direction
-nx = 1 + Lx * 1 # Number of points in x direction
-ny = 1 + Ly * 1 # Number of points in y direction
+Lx = 6        # Length in x direction
+Ly = 5     # Length in y direction
+nx = 1 + Lx * 8 # Number of points in x direction
+ny = 1 + Ly * 8 # Number of points in y direction
 k = 16           # Wavenumber of the problem
 ns = 8           # Number of point sources + random position and weight below
-J = 2
+J = 5
 assert (ny - 1) % J == 0
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
 
@@ -702,9 +696,16 @@ if rank == 0:
     initial_guess = np.ones(2*nx*(J-1), dtype=np.complex128)
 
 if size == 1:
-    y_fixed, iter, err = par_fixed_point(nx, ny, Lx, Ly, sp, k, J, initial_guess, 0.5)
+    y_fixed, iter, err = fixed_point(nx, ny, Lx, Ly, sp, k, J, initial_guess, 0.5)
 else:
     y_fixed, iter, err = par_fixed_point(nx, ny, Lx, Ly, sp, k, J, initial_guess, 0.5)
+
+#if rank == 0:
+#    print("Starting sequential fixed point:")
+#    y_fixed, iter, err = fixed_point(nx, ny, Lx, Ly, sp, k, J, initial_guess, 0.5, 1e-12)
+#    print("Starting parallel fixed point:")
+#comm.Barrier()
+#y_fixed, iter, err = par_fixed_point(nx, ny, Lx, Ly, sp, k, J, initial_guess, 0.5,1e-12)
 
 if rank == 0:
     y_gmres, My_residuals = MyGmres(nx, ny, Lx, Ly, sp, k, J)
@@ -722,7 +723,7 @@ if rank == 0:
     print("Fixed Point vs GMRES error for subproblem  = ", la.norm(y_fixed - y_gmres))
     plot_residuals(err, My_residuals)
 
-    # Determine the common color range
+ # Determine the common color range
     vmin = min(np.min(np.real(x)), np.min(np.real(x_gmres)))
     vmax = max(np.max(np.real(x)), np.max(np.real(x_gmres)))
 
