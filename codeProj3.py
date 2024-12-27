@@ -288,7 +288,8 @@ def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
 ##                             Global operators                            ##
 #############################################################################
 
-def S_operator(J, x, Bj_list, Sj_list, Cj_list, Tj_list):
+# n_rows non è J!!
+def S_operator(J, x, Bj_list, Sj_list, Cj_list, Tj_list, displacement = 0, n_rows = J):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -301,13 +302,13 @@ def S_operator(J, x, Bj_list, Sj_list, Cj_list, Tj_list):
     """
     # y = Sx
     y = np.zeros_like(x)
-    assert len(x) == 2*(J-1)*nx
+    
     for j in range(J): 
         xj = Cj_list[j] @ x
         y_local = 2j * Bj_list[j] @ Sj_list[j].solve(Bj_list[j].T @ Tj_list[j] @ xj)
         y += Cj_list[j].T @ y_local
         y += Cj_list[j].T @ xj
-    return y
+    return y[displacement:displacement + n_rows]
 
 def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours, thus x has dimention 2*nx*(J-1)
     """
