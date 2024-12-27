@@ -288,27 +288,37 @@ def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
 ##                             Global operators                            ##
 #############################################################################
 
-# n_rows non è J!!
-def S_operator(J, x, Bj_list, Sj_list, Cj_list, Tj_list, displacement = 0, n_rows = J):
+
+def S_operator(nx, J, global_x, Bj_list, Sj_list, Cj_list, Tj_list, n_values = None, values_displacement = 0, local_js = None):
     """
     Input:
         nx, ny: number of points in the x and y directions
         Lx, Ly: lenghts of the domain in the x and y direction
         j: subdivision to be considered
-        J: total number of subdivisions of the domain
+        J: total number of subdivisions of the domain 
         x: interface unknown 
     Output: 
         y: action of the operator S on x 
     """
     # y = Sx
+    if n_values is None:
+        n_values = 2*nx*(J-1)
+    if local_js is None:
+        local_js = J
+    
+    x = np.zeros(2*nx*(J-1), dtype = np.complex128)
+    x[values_displacement:values_displacement + n_values] = global_x.copy()
+
     y = np.zeros_like(x)
     
-    for j in range(J): 
+    for j in range(local_js): 
         xj = Cj_list[j] @ x
         y_local = 2j * Bj_list[j] @ Sj_list[j].solve(Bj_list[j].T @ Tj_list[j] @ xj)
         y += Cj_list[j].T @ y_local
         y += Cj_list[j].T @ xj
-    return y[displacement:displacement + n_rows]
+    
+    final_y = y[values_displacement:values_displacement + n_values].copy()
+    return final_y
 
 def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours, thus x has dimention 2*nx*(J-1)
     """
@@ -326,7 +336,7 @@ def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours,
     return x1
     
 # This isn't b, but the vector g (I still don't know if it makes more sense like this)
-def g_vector(J, Sj_list, Cj_list, Bj_list, bj_list):
+def g_vector(J, Sj_list, Cj_list, Bj_list, bj_list, local_js = None):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -337,10 +347,12 @@ def g_vector(J, Sj_list, Cj_list, Bj_list, bj_list):
     Output: 
         g: global right-hand side of the skeleton problem
     """
+    if local_js is None:
+        local_js = J
     dimg = 2*(J-1)*nx
     g = np.zeros(dimg, dtype = np.complex128)
 
-    for j in range(J):
+    for j in range(local_js):
         g += Cj_list[j].T @ (Bj_list[j] @ Sj_list[j].solve(bj_list[j]))
 
     g = -2j * Pi_operator(nx, J, g.copy())
@@ -351,7 +363,9 @@ def g_vector(J, Sj_list, Cj_list, Bj_list, bj_list):
 ##                            Helper function                              ##
 #############################################################################
 
-def create_matrices(nx, ny, Lx, Ly, sp, k, J, displacement = 0, n_rows = J):
+def create_matrices(nx, ny, Lx, Ly, sp, k, J, displacement = 0, n_rows = None):
+    if n_rows is None:
+        n_rows = J
     vtxj_list = []
     eltj = []
     Aj_list = []
@@ -441,12 +455,12 @@ def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000)
     p_0 = p0.copy()
     
     while (iter < iter_max):
-        y = S_operator(J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)
+        y = S_operator(nx, J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)
         PiSp0 = Pi_operator(nx,J,y)
         p_next = (1 - w)*p_0 - w*PiSp0  + w*g
         err = np.linalg.norm(p_next - p_0, ord=2)
         residual = np.linalg.norm(p_0 + Pi_operator(nx,J,
-        S_operator(J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)) - g, ord=2)
+        S_operator(nx, J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)) - g, ord=2)
         errs = np.append(errs,err)
         residuals = np.append(residuals,residual)
         p_0 = p_next.copy()
@@ -473,51 +487,74 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
     """
     rank = comm.Get_rank()
     size = comm.Get_size()
+    
     assert w > 0 and w < 1
+
+    residual = 0
     residuals = []
-    errs = []
     iter = 0
     n_p0 = 0
+
     if rank == 0:
         n_p0 = len(p0)
     n_p0 = comm.bcast(n_p0, root=0)
 
-    rows_per_process = [(J // size + (1 if i < J % size else 0)) for i in range(size)] # Number of rows each processor gets
-    displacements = [sum(rows_per_process[:i]) for i in range(size)]  # Displacement for each processor
-
-    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, displacements[rank], rows_per_process[rank])
-    g = None
-    p_next = None
-    p_0 = None
-    if rank == 0:
-        g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list)
-        assert len(p0) == len(g)
-
-        p_next = np.zeros_like(p0)
-        p_0 = p0.copy()
+    j_per_process = [(J // size + (1 if i < J % size else 0)) for i in range(size)] 
+    j_displacements = [sum(j_per_process[:i]) for i in range(size)]
+    values_per_process = [2*j_per_process[i]*nx - (nx if i == 0 else 0) - (nx if i == size - 1 else 0)  for i in range(size)] 
+    values_displacements = [sum(values_per_process[:i]) for i in range(size)]
     
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, j_displacements[rank], j_per_process[rank])
+
+    local_g = g_vector(J, Sj_list, Cj_list, Bj_list, bj_list, j_per_process[rank])
+    local_p0 = np.empty(values_per_process[rank], dtype=np.complex128)
+    local_PiSp0 = np.empty(values_per_process[rank], dtype=np.complex128)
+    local_p_next = np.empty(values_per_process[rank], dtype=np.complex128)
+
+    if rank == 0:
+        y = np.empty(n_p0,dtype=np.complex128)
+        g = np.empty(n_p0,dtype=np.complex128)
+        PiSp0 = np.empty(n_p0,dtype=np.complex128)
+        p_next = np.empty(n_p0,dtype=np.complex128)
+
+    comm.Reduce(local_g, g if rank == 0 else None, op=MPI.SUM, root = 0)
+    comm.Scatterv([p0 if rank == 0 else None, values_per_process,values_displacements,MPI.COMPLEX], local_p0, root=0)
+    comm.Scatterv([g if rank == 0 else None, values_per_process,values_displacements,MPI.COMPLEX], local_g, root=0)
+    
+    print("rank: ",rank, "local_p0: ", local_p0)
+    if rank == 0:
+        print("p0:", p0)
+
+    comm.Gatherv(local_p0, [p0 if rank == 0 else None,values_per_process,values_displacements,MPI.COMPLEX], root=0)
+
     while (iter < iter_max):
-        # This is just the local y for each rank
 
-        y_local = S_operator(J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)
-        y = None
-
-        comm.reduce(y_local, y, op=MPI.SUM, root=0)
+        local_y = S_operator(nx, J, local_p0, Bj_list, Sj_list, Cj_list, Tj_list, values_per_process[rank], values_displacements[rank], j_per_process[rank])
+        print("rank = ",rank, "local_y: ", local_y)
+        
+        if rank == 0:
+            print("y length: ",len(y))
+            print("values:", values_displacements, values_per_process)
+        
+        comm.Gatherv([local_y, MPI.COMPLEX], [y if rank == 0 else None ,([p for p in values_per_process],[v for v in values_displacements]),MPI.COMPLEX])
+        
         if rank == 0:
             PiSp0 = Pi_operator(nx,J,y)
         
-        comm.Scatterv([PiSp0,rows_per_process,displacements,MPI.DOUBLE], y_local, root=0)
-        p_next = (1 - w)*p_0 - w*PiSp0  + w*g
-        err = np.linalg.norm(p_next - p_0, ord=2)
-        residual = np.linalg.norm(p_0 + Pi_operator(nx,J,
-        S_operator(J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)) - g, ord=2)
-        errs = np.append(errs,err)
-        residuals = np.append(residuals,residual)
-        p_0 = p_next.copy()
+        comm.Scatterv([PiSp0 if rank == 0 else None,values_per_process,values_displacements,MPI.COMPLEX], local_PiSp0, root=0)
+        local_p_next = (1 - w)*local_p0 - w*local_PiSp0  + w*local_g
+        # We compute the residual at iteration iter - 1 since we already have the value of PiSp0
+        local_residual = np.square(np.linalg.norm(local_p0 + local_PiSp0 - local_g, ord=2))
+        comm.Allreduce(local_residual, residual, op=MPI.SUM)
+        residual = np.sqrt(residual)
+        if rank == 0:
+            residuals = np.append(residuals,residual)
+        local_p0 = local_p_next.copy()
         iter += 1
         if residual < tol:
             break
-
+    
+    comm.Gatherv(local_p_next,[p_next if rank == 0 else None,values_per_process,values_displacements,MPI.COMPLEX],root=0)
     return p_next, iter, residuals
 #############################################################################
 ##                          GMRES Method                                   ##
@@ -536,7 +573,7 @@ def MyGmres(nx, ny, Lx, Ly, sp, k, J, tol = 1e-12):
         Myresiduals: residuals
     """
     def linear_op(nx, J, x, Bj_list, Sj_list, Cj_list, Tj_list):
-        y = S_operator(J, x, Bj_list, Sj_list, Cj_list, Tj_list)
+        y = S_operator(nx, J, x, Bj_list, Sj_list, Cj_list, Tj_list)
         return x + Pi_operator(nx, J, y) 
    
 
@@ -618,85 +655,95 @@ rank = comm.Get_rank()
 size = comm.Get_size()
 
 Lx = 2        # Length in x direction
-Ly = 2          # Length in y direction
-nx = 1 + Lx * 16 # Number of points in x direction
-ny = 1 + Ly * 16 # Number of points in y direction
+Ly = 2        # Length in y direction
+nx = 1 + Lx * 1 # Number of points in x direction
+ny = 1 + Ly * 1 # Number of points in y direction
 k = 16           # Wavenumber of the problem
 ns = 8           # Number of point sources + random position and weight below
-J = 4
+J = 2
+assert (ny - 1) % J == 0
 sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
 
-vtx, elt = mesh(nx, ny, Lx, Ly)
-belt = boundary(nx, ny)
-M = mass(vtx, elt)
-Mb = mass(vtx, belt) # The dimentions of Mb are the same as the ones of M, because of the function mass
-K = stiffness(vtx, elt)
-A = K - k**2 * M - 1j*k*Mb      # matrix of linear system
-b = M @ point_source(sp,k)(vtx) # linear system RHS (source term)
-x = spla.spsolve(A, b)          # solution of linear system via direct solver
+if rank == 0:
+    vtx, elt = mesh(nx, ny, Lx, Ly)
+    belt = boundary(nx, ny)
+    M = mass(vtx, elt)
+    Mb = mass(vtx, belt) # The dimentions of Mb are the same as the ones of M, because of the function mass
+    K = stiffness(vtx, elt)
+    A = K - k**2 * M - 1j*k*Mb      # matrix of linear system
+    b = M @ point_source(sp,k)(vtx) # linear system RHS (source term)
+    x = spla.spsolve(A, b)          # solution of linear system via direct solver
 
-# GMRES
-residuals = [] # storage of GMRES residual history
+    # GMRES
+    residuals = [] # storage of GMRES residual history
 
-def callback(x):
-    residuals.append(x)
+    def callback(x):
+        residuals.append(x)
 
-#y, _ = spla.gmres(A, b, tol=1e-12, callback=callback, callback_type='pr_norm')   
-y, _ = spla.gmres(A, b, rtol=1e-12, callback=callback, callback_type='pr_norm')
-print("Total number of GMRES iterations = ", len(residuals))
-print("Direct vs GMRES error            = ", la.norm(y - x))
+    #y, _ = spla.gmres(A, b, tol=1e-12, callback=callback, callback_type='pr_norm')   
+    y, _ = spla.gmres(A, b, rtol=1e-12, callback=callback, callback_type='pr_norm')
+    print("Total number of GMRES iterations = ", len(residuals))
+    print("Direct vs GMRES error            = ", la.norm(y - x))
 
-## Plots
-# plot_mesh(vtx, elt) # slow for fine meshes
-# plt.show()
-# plot_mesh(vtx, elt, np.real(x))
-# plt.colorbar()
-# plt.show()
-# plot_mesh(vtx, elt, np.abs(x))
-# plt.colorbar()
-# plt.show()
-# plt.semilogy(residuals)
-# plt.show()
+    ## Plots
+    # plot_mesh(vtx, elt) # slow for fine meshes
+    # plt.show()
+    # plot_mesh(vtx, elt, np.real(x))
+    # plt.colorbar()
+    # plt.show()
+    # plot_mesh(vtx, elt, np.abs(x))
+    # plt.colorbar()
+    # plt.show()
+    # plt.semilogy(residuals)
+    # plt.show()
 
-x1 = np.ones(2*nx*(J-1), dtype=np.complex128)
-y_fixed, iter, err = fixed_point(nx, ny, Lx, Ly, sp, k, J, x1, 0.5)
-y_gmres, My_residuals = MyGmres(nx, ny, Lx, Ly, sp, k, J)
-x_fixed = []
-x_gmres = []
-for j in range(J):
-    x_gmres = np.append(x_gmres,uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres))
-    x_fixed = np.append(x_fixed,uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_fixed))
-    if j != J - 1:
-        # take out the last nx points of the previous solution
-        x_gmres = x_gmres[:-nx]
-        x_fixed = x_fixed[:-nx]
+initial_guess = None
+if rank == 0:
+    initial_guess = np.ones(2*nx*(J-1), dtype=np.complex128)
 
-print("Direct vs GMRES error for subproblem       = ", la.norm(x_gmres - x))
-print("Fixed Point vs GMRES error for subproblem  = ", la.norm(y_fixed - y_gmres))
-plot_residuals(err, My_residuals)
+if size == 1:
+    y_fixed, iter, err = par_fixed_point(nx, ny, Lx, Ly, sp, k, J, initial_guess, 0.5)
+else:
+    y_fixed, iter, err = par_fixed_point(nx, ny, Lx, Ly, sp, k, J, initial_guess, 0.5)
 
-# Determine the common color range
-vmin = min(np.min(np.real(x)), np.min(np.real(x_gmres)))
-vmax = max(np.max(np.real(x)), np.max(np.real(x_gmres)))
+if rank == 0:
+    y_gmres, My_residuals = MyGmres(nx, ny, Lx, Ly, sp, k, J)
+    x_fixed = []
+    x_gmres = []
+    for j in range(J):
+        x_gmres = np.append(x_gmres,uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres))
+        x_fixed = np.append(x_fixed,uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_fixed))
+        if j != J - 1:
+            # take out the last nx points of the previous solution
+            x_gmres = x_gmres[:-nx]
+            x_fixed = x_fixed[:-nx]
 
-plt.figure(figsize=(14, 8))
-plt.subplot(1, 3, 1)
-plot_mesh(vtx, elt, np.real(x),vmin,vmax)
-plt.title("Direct solver")
-plt.colorbar()
-plt.subplot(1, 3, 2)
-plot_mesh(vtx, elt, np.real(x_gmres),vmin,vmax)
-plt.title("GMRES solver")
-plt.colorbar()
-plt.subplot(1, 3, 3)
-plot_mesh(vtx, elt, np.real(x_fixed),vmin,vmax)
-plt.title("Fixed Point solver")
-plt.colorbar()
-plt.show()
-#for j in range(J):
-#    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
-#    plt.subplot(2, 3, 3+j)
-#    plot_mesh(vtxj, eltj, np.real(uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres)))
-#    plt.colorbar()
-#
-#plt.show()
+    print("Direct vs GMRES error for subproblem       = ", la.norm(x_gmres - x))
+    print("Fixed Point vs GMRES error for subproblem  = ", la.norm(y_fixed - y_gmres))
+    plot_residuals(err, My_residuals)
+
+    # Determine the common color range
+    vmin = min(np.min(np.real(x)), np.min(np.real(x_gmres)))
+    vmax = max(np.max(np.real(x)), np.max(np.real(x_gmres)))
+
+    plt.figure(figsize=(14, 8))
+    plt.subplot(1, 3, 1)
+    plot_mesh(vtx, elt, np.real(x),vmin,vmax)
+    plt.title("Direct solver")
+    plt.colorbar()
+    plt.subplot(1, 3, 2)
+    plot_mesh(vtx, elt, np.real(x_gmres),vmin,vmax)
+    plt.title("GMRES solver")
+    plt.colorbar()
+    plt.subplot(1, 3, 3)
+    plot_mesh(vtx, elt, np.real(x_fixed),vmin,vmax)
+    plt.title("Fixed Point solver")
+    plt.colorbar()
+    plt.show()
+    #for j in range(J):
+    #    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
+    #    plt.subplot(2, 3, 3+j)
+    #    plot_mesh(vtxj, eltj, np.real(uj_solution(nx, ny, Lx, Ly, j, J, sp, k, y_gmres)))
+    #    plt.colorbar()
+    #
+    #plt.show()
