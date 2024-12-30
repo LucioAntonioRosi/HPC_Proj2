@@ -125,13 +125,17 @@ def local_mesh(nx, ny, Lx, Ly, j, J):
         eltj: connectivity of the triangles in the j-th subdivision
     """
     assert j >= 0 and j < J
-    vtx, elt = mesh(nx,ny,Lx,Ly)
+
     endj = (ny - 1) // J
+
+    vtx, elt = mesh(nx,ny,Lx,Ly)
+
     vtxj = vtx[endj*j*nx:((j + 1)*endj + 1)*nx,:]
-    eltj1 = elt[endj*j*(nx-1):((j + 1)*endj)*(nx - 1),:]
-    eltj2 = elt[(nx-1)*(ny-1) + endj*j*(nx-1):(nx-1)*(ny-1) + ((j + 1)*endj)*(nx - 1),:] 
-    eltj = np.concatenate((eltj1, eltj2), axis=0)
-    eltj = eltj - eltj.min() # renumbering of triangles for local mesh
+
+    eltj = np.append(elt[endj*j*(nx-1):((j + 1)*endj)*(nx - 1),:], 
+                     elt[(nx-1)*(ny-1) + endj*j*(nx-1):(nx-1)*(ny-1) + ((j + 1)*endj)*(nx - 1),:], axis=0) # "low triangles", "high triangles"
+    eltj = eltj - eltj.min() # renumbering of vertices for local mesh
+    
     return vtxj, eltj
 
 def local_boundary(nx, ny, j, J):
@@ -144,24 +148,26 @@ def local_boundary(nx, ny, j, J):
         beltj_phys, beltj_artf: connectivity of the physical and artificial boundaries
     """
     assert j >= 0 and j < J
+
     endj = (ny - 1) // J
-    bottom = np.hstack((np.arange(0,nx - 1,1)[:,na],
-                        np.arange(1,nx,1)[:,na]))
-    top    = np.hstack((np.arange(nx*endj,nx*(endj + 1) -1,1)[:,na],
-                        np.arange(nx*endj + 1,nx*(endj + 1),1)[:,na]))
-    left   = np.hstack((np.arange(0,nx*endj,nx)[:,na],
-                        np.arange(nx,nx*(endj + 1),nx)[:,na]))
-    right  = np.hstack((np.arange(nx - 1,nx*endj,nx)[:,na],
-                        np.arange(2*nx - 1,nx*(endj + 1),nx)[:,na]))
+
+    bottom = np.hstack((np.arange(0,nx - 1,1)[:,na], np.arange(1,nx,1)[:,na]))
+    top    = np.hstack((np.arange(nx*endj,nx*(endj + 1) -1,1)[:,na], np.arange(nx*endj + 1,nx*(endj + 1),1)[:,na]))
+    left   = np.hstack((np.arange(0,nx*endj,nx)[:,na], np.arange(nx,nx*(endj + 1),nx)[:,na]))
+    right  = np.hstack((np.arange(nx - 1,nx*endj,nx)[:,na], np.arange(2*nx - 1,nx*(endj + 1),nx)[:,na]))
+
     if j == 0:
         beltj_phys = np.vstack((bottom, left, right))
         beltj_artf = top
+
     elif j == J - 1:
         beltj_phys = np.vstack((top, left, right))
         beltj_artf = bottom
+
     else:
         beltj_phys = np.vstack((left, right))
         beltj_artf = np.vstack((bottom, top)) 
+
     return beltj_phys, beltj_artf
 
 #############################################################################
@@ -178,10 +184,13 @@ def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
         crs_matrix: the local volume restiction matrix R_j
     """
     assert j >= 0 and j < J
+
     endj = (ny - 1) // J
+
     cols = np.arange(endj*j*nx,(endj*(j + 1) + 1)*nx)
     rows = np.arange(len(cols))
     data = np.ones_like(cols)
+
     return csr_matrix((data, (rows, cols)), shape=(len(rows),nx * ny))
 
 def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1) // J) + 1))
@@ -193,13 +202,11 @@ def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1)
     Output: 
         crs_matrix: the local boundary restiction matrix B_j
     """
-    cols = belt_artf[:,0]
-    aux = belt_artf[nx - 2::(nx - 1),1] # Aux takes every value starting from position nx - 2
-                                        # in the position multiple of nx - 1
-    cols = np.append(cols,aux)
-    cols = np.sort(cols)
+
+    cols = np.sort(np.append(belt_artf[:,0],belt_artf[nx - 2::(nx - 1),1]))
     rows = np.arange(len(cols))
     data = np.ones_like(cols)
+
     return csr_matrix((data, (rows,cols)), shape=(len(rows), nx*(((ny - 1) // J) + 1)))
 
 # S has dimention 2*nx*(J-1) since every artificial surface has 2*nx points a part from the first and last
@@ -215,15 +222,11 @@ def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
         crs_matrix: the local boundary restiction matrix C_j
     """
     assert j >= 0 and j < J
-    if j == 0:
-        cols = np.arange(0, nx)
-    elif j == J - 1:
-        cols = np.arange((2*j - 1)*nx, 2*j*nx)
-    else:
-        start = 2*j - 1
-        cols = np.arange(start * nx, (start + 2) * nx)
+ 
+    cols = np.arange((2*j - (j != 0))*nx, (2*j + (j != J - 1))*nx)
     rows = np.arange(len(cols))
     data = np.ones_like(cols)
+
     return csr_matrix((data, (rows,cols)), shape=(len(rows), 2*(J - 1)*nx))
 
 #############################################################################
@@ -269,11 +272,8 @@ def Sj_factorization(Aj, Tj, Bj):
     Output: 
         spla.splu: LU factorisation of Aj - i Bj^T Tj Bj
     """
-    # CSC format is more efficient for direct solvers
-    Aj_csc = csc_matrix(Aj)
-    Tj_csc = csc_matrix(Tj)
-    Bj_csc = csc_matrix(Bj)
-    return spla.splu(Aj_csc - 1j * (Bj_csc.T @ Tj_csc @ Bj_csc))
+    # CSC format is more efficient 
+    return spla.splu(csc_matrix(Aj) - 1j * (csc_matrix(Bj).T @ csc_matrix(Tj) @ csc_matrix(Bj)))
 
 
 # don't understand why ps, I put sp
@@ -312,19 +312,19 @@ def S_operator(nx, J, global_x, Bj_list, Sj_list, Cj_list, Tj_list, n_values = N
     if local_js is None:
         local_js = J
     
+    # Useful for the parallel implementation
     x = np.zeros(2*nx*(J-1), dtype = np.complex128)
     x[values_displacement:values_displacement + n_values] = global_x.copy()
 
     y = np.zeros_like(x)
     
     for j in range(local_js): 
-        xj = Cj_list[j] @ x
-        y_local = 2j * Bj_list[j] @ Sj_list[j].solve(Bj_list[j].T @ Tj_list[j] @ xj)
-        y += Cj_list[j].T @ y_local
-        y += Cj_list[j].T @ xj
-    
-    final_y = y[values_displacement:values_displacement + n_values].copy()
-    return final_y
+        y += Cj_list[j].T @ Bj_list[j] @ Sj_list[j].solve(Bj_list[j].T @ Tj_list[j] @ Cj_list[j] @ x)
+
+    y*= 2j
+    y += x
+
+    return y[values_displacement:values_displacement + n_values]
 
 def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours, thus x has dimention 2*nx*(J-1)
     """
@@ -354,13 +354,14 @@ def g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list, local_js = None):
     """
     if local_js is None:
         local_js = J
-    dimg = 2*(J-1)*nx
-    g = np.zeros(dimg, dtype = np.complex128)
+
+    g = np.zeros(2*(J-1)*nx, dtype = np.complex128)
 
     for j in range(local_js):
         g += Cj_list[j].T @ (Bj_list[j] @ Sj_list[j].solve(bj_list[j]))
 
     g = -2j * Pi_operator(nx, J, g.copy())
+
     return g
 
 
@@ -465,22 +466,29 @@ def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000)
         err: error at the final iteration
     """
     assert w > 0 and w < 1
+
+    residual = 0
     residuals = []
     iter = 0
 
 
     _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
+    del _ # We don't need the vertices and the elements
+
     g = g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list)
+
     assert len(p0) == len(g)
+
     p_next = np.zeros_like(p0)
     p_0 = p0.copy()
+
     while (iter < iter_max):
         y = S_operator(nx, J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)
         PiSp0 = Pi_operator(nx,J,y)
         p_next = (1 - w)*p_0 - w*PiSp0  + w*g
         
-        residual = np.linalg.norm(p_0 + Pi_operator(nx,J,
-        S_operator(nx, J, p_0, Bj_list, Sj_list, Cj_list, Tj_list)) - g, ord=2)
+        residual = np.linalg.norm(p_0 + PiSp0 - g, ord=2)
+
         residuals = np.append(residuals,residual)
         p_0 = p_next.copy()
         iter += 1
@@ -517,6 +525,7 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
 
     if rank == 0:
         n_p0 = len(p0)
+    
     n_p0 = comm.bcast(n_p0, root=0)
 
     j_per_process = [(J // size + (1 if i < J % size else 0)) for i in range(size)] 
@@ -524,8 +533,8 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
     values_per_process = [2*j_per_process[i]*nx - (nx if i == 0 else 0) - (nx if i == size - 1 else 0)  for i in range(size)] 
     values_displacements = [sum(values_per_process[:i]) for i in range(size)]
     
-    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, j_displacements[rank], j_per_process[rank])
-    
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, _ = create_matrices(nx, ny, Lx, Ly, sp, k, J, j_displacements[rank], j_per_process[rank])
+    del _ 
     local_g = np.empty(values_per_process[rank], dtype=np.complex128)
     local_p0 = np.empty(values_per_process[rank], dtype=np.complex128)
     local_PiSp0 = np.empty(values_per_process[rank], dtype=np.complex128)
@@ -549,7 +558,6 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
         
 
         local_y = S_operator(nx, J, local_p0, Bj_list, Sj_list, Cj_list, Tj_list, values_per_process[rank], values_displacements[rank], j_per_process[rank])
-        #local_y = S_operator(nx, J, local_p0, Bj_list[j_displacements[rank]:j_displacements[rank] + j_per_process[rank]], Sj_list[j_displacements[rank]:j_displacements[rank] + j_per_process[rank]], Cj_list[j_displacements[rank]:j_displacements[rank] + j_per_process[rank]], Tj_list[j_displacements[rank]:j_displacements[rank] + j_per_process[rank]], values_per_process[rank], values_displacements[rank], j_per_process[rank])
 
         comm.Gatherv([local_y, MPI.COMPLEX], [y if rank == 0 else None ,([2*p for p in values_per_process],[2*v for v in values_displacements]),MPI.COMPLEX])
         
@@ -559,20 +567,23 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
         comm.Scatterv([PiSp0 if rank == 0 else None,[2*p for p in values_per_process],[2*v for v in values_displacements],MPI.COMPLEX], local_PiSp0, root=0)
         
         local_p_next = (1 - w)*local_p0 - w*local_PiSp0  + w*local_g
-        #print("iter:",iter, "rank:",rank,"local_pnext:",local_p_next)
-        # We compute the residual at iteration iter - 1 since we already have the value of PiSp0
+        
         local_residual = np.square(np.linalg.norm(local_p0 + local_PiSp0 - local_g, ord=2))
         residual = np.empty(1,np.float64)
         comm.Allreduce(local_residual, residual, op=MPI.SUM)
         residual = np.sqrt(residual)
+
         if rank == 0:
             residuals = np.append(residuals,residual)
+        
         local_p0 = local_p_next.copy()
         iter += 1
+
         if residual < tol:
             break
     
     comm.Gatherv(local_p_next,[p_next if rank == 0 else None,[2*p for p in values_per_process],[2*v for v in values_displacements],MPI.COMPLEX],root=0)
+
     return p_next if rank == 0 else None, iter, residuals
 #############################################################################
 ##                          GMRES Method                                   ##
@@ -596,6 +607,7 @@ def MyGmres(nx, ny, Lx, Ly, sp, k, J, tol = 1e-12):
    
 
     _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, 0, J)
+    del _
     A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec =lambda x: linear_op(nx, J ,x, Bj_list, Sj_list, Cj_list, Tj_list), dtype = np.complex128)
     g = g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list)
     Myresiduals = []
@@ -736,7 +748,7 @@ def plot_uj_solutions(nx, ny, Lx, Ly, J, uj_solutions):
     y_gmres: array-like
         Solution obtained from GMRES.
     """
-    fig, axes = plt.subplots(J, 1, figsize=(8, 18), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, J, figsize=(18, 8), sharex=True, sharey=True)
     fig.suptitle("uj Solutions")
 
     for j in range(J):
@@ -749,6 +761,7 @@ def plot_uj_solutions(nx, ny, Lx, Ly, J, uj_solutions):
 
     plt.tight_layout()
     plt.show()
+
 #############################################################################
 ##                           Save functions                                ##
 #############################################################################
@@ -831,7 +844,7 @@ def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times,
         vmin = min(np.min(arr) for arr in solutions)
         vmax = max(np.max(arr) for arr in solutions)
 
-        fig, axes = plt.subplots(J, 1, figsize=(8, 18), sharex=True, sharey=True)
+        fig, axes = plt.subplots(1, J, figsize=(18, 8), sharex=True, sharey=True)
         fig.suptitle(filename)
         for j in range(J):
             vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
@@ -867,7 +880,6 @@ def main():
     iter_max = args.iter_max
     w = args.w
     
-
     Lx = args.Lx
     Ly = args.Ly
     nx = 1 + Lx * args.loc_nx
@@ -903,6 +915,7 @@ def main():
 
         #y, _ = spla.gmres(A, b, tol=1e-12, callback=callback, callback_type='pr_norm')   
         y, _ = spla.gmres(A, b, rtol=tol, callback=callback, callback_type='pr_norm')
+        
         full_GMRES_time = t.time() 
         print("GMRES time for the full problem = ", full_GMRES_time - direct_time)
         print("Total number of GMRES iterations = ", len(residuals))
