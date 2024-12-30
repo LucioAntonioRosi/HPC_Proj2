@@ -335,11 +335,13 @@ def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours,
     Output: 
         x: action of the operator Pi on x itself
     """
-    x1 = x.copy()
+    
     for i in range (0, (2*J - 1)*nx,2*nx):
-        x1[i: i + nx] = x[i + nx: i + 2*nx].copy()
-        x1[i + nx: i + 2*nx] = x[i: i + nx].copy()
-    return x1
+        aux = x[i: i + nx].copy()
+        x[i: i + nx] = x[i + nx: i + 2*nx].copy()
+        x[i + nx: i + 2*nx] = aux
+    
+    return x
     
 def g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list, local_js = None):
     """
@@ -841,16 +843,16 @@ def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times,
     plt.close()
 
     def save_uj_solutions(ujs, filename):
-        vmin = min(np.min(arr) for arr in solutions)
-        vmax = max(np.max(arr) for arr in solutions)
+        vmin = min(np.min(arr) for arr in ujs)
+        vmax = max(np.max(arr) for arr in ujs)
 
         fig, axes = plt.subplots(1, J, figsize=(18, 8), sharex=True, sharey=True)
         fig.suptitle(filename)
         for j in range(J):
             vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
             uj = ujs[j]
-            plot_mesh(vtxj, eltj, uj, ax=axes[j])
-            axes[J-1-j].set_title(f"Subdomain {j+1}")
+            plot_mesh(vtxj, eltj, uj, vmin, vmax, ax=axes[j])
+            axes[J-1-j].set_title(f"Subdomain {J - j}")
             fig.colorbar(axes[j].collections[0], ax=axes[j])
         plt.tight_layout()
         plt.savefig(os.path.join(folder_name, f"{filename}.png"))
@@ -915,7 +917,7 @@ def main():
 
         #y, _ = spla.gmres(A, b, tol=1e-12, callback=callback, callback_type='pr_norm')   
         y, _ = spla.gmres(A, b, rtol=tol, callback=callback, callback_type='pr_norm')
-        
+
         full_GMRES_time = t.time() 
         print("GMRES time for the full problem = ", full_GMRES_time - direct_time)
         print("Total number of GMRES iterations = ", len(residuals))
