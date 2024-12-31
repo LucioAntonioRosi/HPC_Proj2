@@ -366,7 +366,6 @@ def g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list, local_js = None):
 
     return g
 
-
 #############################################################################
 ##                            Helper functions                             ##
 #############################################################################
@@ -432,10 +431,10 @@ def print_matrices(Tj_list, Bj_list, Cj_list):
 
 def arguments():
     parser = argparse.ArgumentParser(description='Domain decomposition for Helmholtz problem')
-    parser.add_argument('--Lx', type=float, default=2, help='Length in x direction of the rectangle')
-    parser.add_argument('--Ly', type=float, default=4, help='Length in y direction of the rectangle')
-    parser.add_argument('--loc_nx', type=int, default=16, help='Number of vertices for each unitary segment of the rectangle in the x direction')
-    parser.add_argument('--loc_ny', type=int, default=16, help='Number of vertices for each unitary segment of the rectangle in the y direction')
+    parser.add_argument('--Lx', type=float, default=4, help='Length in x direction of the rectangle')
+    parser.add_argument('--Ly', type=float, default=6, help='Length in y direction of the rectangle')
+    parser.add_argument('--loc_nx', type=int, default=32, help='Number of vertices for each unitary segment of the rectangle in the x direction')
+    parser.add_argument('--loc_ny', type=int, default=32, help='Number of vertices for each unitary segment of the rectangle in the y direction')
     parser.add_argument('--k', type=float, default=16, help='Wavenumber of the problem')
     parser.add_argument('--ns', type=int, default=8, help='Number of point sources')
     parser.add_argument('--J', type=int, default=4, help='Number of subdomains in the y direction (be aware that ny - 1 has to be a multiple of J)')
@@ -1047,11 +1046,11 @@ def main():
                 values = [
                     f"Direct solver time = {direct_time - start_time}",
                     f"GMRES time for the full problem = {full_GMRES_time - direct_time}",
-                    f"Sequential fixed point time = {fixed_time - full_GMRES_time}",
-                    f"Total number of sequential fixed point iterations = {iter}",
+                    f"Fixed point time = {fixed_time - full_GMRES_time}",
+                    f"Total number of fixed point iterations = {iter}",
                     f"GMRES time for the local problems = {local_GMRES_time - fixed_time}",
                     f"Total number of GMRES iterations = {len(residuals)}",
-                    f"Total number of sequential fixed point iterations = {iter}",
+                    f"Total number of fixed point iterations = {iter}",
                     f"Total number of GMRES iterations for the local problems = {len(My_residuals)}",
                 ]
                 title = f"(Lx,Ly,nx,ny,k,J,size) = ({Lx},{Ly},{nx},{ny},{k},{J},{size})"
