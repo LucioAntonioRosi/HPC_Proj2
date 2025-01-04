@@ -5,7 +5,7 @@ import numpy as np
 na = np.newaxis
 import numpy.linalg as la
 import scipy.sparse.linalg as spla
-from scipy.sparse import csr_matrix, csc_matrix, block_diag #Added block_diag for Tj_matrix
+from scipy.sparse import csr_matrix, csc_matrix
 import mpi4py.MPI as MPI
 
 from matplotlib import cm
@@ -44,8 +44,6 @@ def boundary(nx, ny):
                         np.arange(2*nx-1,nx*ny,nx)[:,na]))
     return np.vstack((bottom, top, left, right))
 
-# If i give triangles as second input, it computes the area of each triangle and returns a vector of areas
-# If i am giving the boundary as second input, it computes the length of each boundary segment and returns a vector of lengths
 def get_area(vtx, elt):
 
     d = np.size(elt, 1)
@@ -110,50 +108,27 @@ def plot_mesh(vtx, elt, val=None, vmin=None, vmax=None, ax = None, **kwargs):
     ax.set_aspect('equal', adjustable='box')
 
 #############################################################################
-##                             Local mesh                                  ##
+##                            Local mesh                                   ##
 #############################################################################
 
-def local_mesh(nx, ny, Lx, Ly, j, J, Rj):
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        Lx, Ly: lenghts of the domain in the x and y direction
-        j: subdivision to be considered
-        J: total number of subdivisions of the domain
-    Output: 
-        vtxj: vertex of the j-th subdivision
-        eltj: connectivity of the triangles in the j-th subdivision
-    """
+def local_mesh(nx, ny, Lx, Ly, j, J):
     assert j >= 0 and j < J
 
     j_per_process = [((ny - 1) // J + (1 if i < (ny - 1) % J else 0)) for i in range(j + 1)] 
     j_displacements = [sum(j_per_process[:i]) for i in range(j + 1)]
 
-    #endj = (ny - 1) // J
-
     vtx, elt = mesh(nx,ny,Lx,Ly) 
 
-    #vtxj = vtx[endj*j*nx:((j + 1)*endj + 1)*nx,:]
     vtxj = vtx[j_displacements[j]*nx:(j_displacements[j] + j_per_process[j] + 1)*nx]
-    vtxj = Rj*vtx
-
-    #eltj = np.append(elt[endj*j*(nx-1):((j + 1)*endj)*(nx - 1),:], 
-    #                 elt[(nx-1)*(ny-1) + endj*j*(nx-1):(nx-1)*(ny-1) + ((j + 1)*endj)*(nx - 1),:], axis=0) # "low triangles", "high triangles"
+   
     eltj = np.append(elt[j_displacements[j]*(nx - 1):(j_displacements[j] + j_per_process[j])*(nx - 1),:],
                      elt[(nx-1)*(ny-1) + j_displacements[j]*(nx - 1):(nx-1)*(ny-1) + (j_displacements[j] + j_per_process[j])*(nx - 1),:],axis=0)
+    
     eltj = eltj - eltj.min() # renumbering of vertices for local mesh   
     
     return vtxj, eltj
 
 def local_boundary(nx, ny, j, J):
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        j: subdivision to be considered
-        J: total number of subdivisions of the domain
-    Output: 
-        beltj_phys, beltj_artf: connectivity of the physical and artificial boundaries
-    """
     assert j >= 0 and j < J
 
     endj = (ny - 1) // J + (1 if j < (ny - 1) % J else 0)
@@ -178,26 +153,14 @@ def local_boundary(nx, ny, j, J):
     return beltj_phys, beltj_artf
 
 #############################################################################
-##                          Restriction matrices                           ##
+##                       Restriction matrices                              ##
 #############################################################################
 
-def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        j: subdivision to be considered
-        J: total number of subdivisions of the domain
-    Output: 
-        crs_matrix: the local volume restiction matrix R_j
-    """
+def Rj_matrix(nx, ny, j, J): 
     assert j >= 0 and j < J
 
     j_per_process = [((ny - 1) // J + (1 if i < (ny - 1) % J else 0)) for i in range(j + 1)] 
     j_displacements = [sum(j_per_process[:i]) for i in range(j + 1)]
-
-    #endj = (ny - 1) // J
-
-    #cols = np.arange(endj*j*nx,(endj*(j + 1) + 1)*nx)
 
     cols = np.arange(j_displacements[j]*nx,(j_displacements[j] + j_per_process[j] + 1)*nx)
     rows = np.arange(len(cols))
@@ -205,15 +168,8 @@ def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
 
     return csr_matrix((data, (rows, cols)), shape=(len(rows),nx * ny))
 
-def Bj_matrix(nx, ny, belt_artf, j, J): # shape Bj = (depends on j, nx * (((ny - 1) // J) + 1))
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        belt_artf: connectivity of the artificial boundaries
-        J: total number of subdivisions of the domain
-    Output: 
-        crs_matrix: the local boundary restiction matrix B_j
-    """
+def Bj_matrix(nx, ny, belt_artf, j, J): 
+    assert j >= 0 and j < J
 
     cols = np.sort(np.append(belt_artf[:,0],belt_artf[nx - 2::(nx - 1),1]))
     rows = np.arange(len(cols))
@@ -221,18 +177,7 @@ def Bj_matrix(nx, ny, belt_artf, j, J): # shape Bj = (depends on j, nx * (((ny -
 
     return csr_matrix((data, (rows,cols)), shape=(len(rows), nx*(((ny - 1) // J + (1 if j < (ny - 1) % J else 0)) + 1)))
 
-# S has dimention 2*nx*(J-1) since every artificial surface has 2*nx points a part from the first and last
-# that have nx points
-# Also, ny shouldn't be needed since we are not looking at the y direction expicitly
-def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        belt_artf: connectivity of the artificial boundaries
-        J: total number of subdivisions of the domain
-    Output: 
-        crs_matrix: the local boundary restiction matrix C_j
-    """
+def Cj_matrix(nx, ny, j ,J): 
     assert j >= 0 and j < J
  
     cols = np.arange((2*j - (j != 0))*nx, (2*j + (j != J - 1))*nx)
@@ -242,83 +187,38 @@ def Cj_matrix(nx, ny, j ,J): # shape Cj = (depends on j, 2*nx*(J-1))
     return csr_matrix((data, (rows,cols)), shape=(len(rows), 2*(J - 1)*nx))
 
 #############################################################################
-##                           Local matrices                                ##
+##                          Local matrices                                 ##
 #############################################################################
 
 def Aj_matrix(vtxj, eltj, beltj_phys, k):
-    """
-    Input:
-        vtxj: vertex of the j-th subdivision
-        eltj: connectivity of the triangles in the j-th subdivision
-        belt_phys: connectivity of the physical boundaries
-        k: wavenumber 
-    Output: 
-        crs_matrix: the local problem matrix A_j
-    """
+   
     Mj = mass(vtxj, eltj) # mass matrix related to Omega_j
     Mbj = mass(vtxj, beltj_phys) # mass matrix related to the physical boundary of Omega_j (does not include artificial boundary)
     Kj = stiffness(vtxj, eltj)
+
     Aj = csr_matrix(Kj - k**2 * Mj - 1j*k*Mbj)
     return Aj
 
 def Tj_matrix(vtxj, beltj_artf, Bj, k):
-    """
-    Input:
-        vtxj: vertex of the j-th subdivision
-        belt_phys: connectivity of the physical boundaries
-        Bj: boundary restriction matrix
-        k: wavenumber 
-    Output: 
-        crs_matrix: the local transmssion matrix T_j
-    """
     Mbj = mass(vtxj, beltj_artf)
     Tj = csr_matrix(k * (Bj @ Mbj @ Bj.T))
     return Tj
 
 def Sj_factorization(Aj, Tj, Bj):
-    """
-    Input:
-        Aj: local problem matrix 
-        Tj: local trasmission matrix
-        Bj: local boundary restricition matrix
-    Output: 
-        spla.splu: LU factorisation of Aj - i Bj^T Tj Bj
-    """
     # CSC format is more efficient 
     return spla.splu(csc_matrix(Aj) - 1j * (csc_matrix(Bj).T @ csc_matrix(Tj) @ csc_matrix(Bj)))
 
-
-# don't understand why ps, I put sp
-def bj_vector(vtxj, eltj, sp, k): # has dimention Omega_j
-    """
-    Input:
-        vtxj: vertex of the j-th subdivision
-        eltj: connectivity of the triangles in the j-th subdomain
-        sp: ?
-        k: wavenumber 
-    Output: 
-        bj: local right-hand side of the interface problem
-    """
+def bj_vector(vtxj, eltj, sp, k): 
     Mj = mass(vtxj, eltj)
     return Mj @ point_source(sp, k)(vtxj)
 
 #############################################################################
-##                             Global operators                            ##
+##                         Global operators                                ##
 #############################################################################
 
 
 def S_operator(nx, J, global_x, Bj_list, Sj_list, Cj_list, Tj_list, n_values = None, values_displacement = 0, local_js = None):
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        Lx, Ly: lenghts of the domain in the x and y direction
-        j: subdivision to be considered
-        J: total number of subdivisions of the domain 
-        x: interface unknown 
-    Output: 
-        y: action of the operator S on x 
-    """
-    # y = Sx
+
     if n_values is None:
         n_values = 2*nx*(J-1)
     if local_js is None:
@@ -339,14 +239,6 @@ def S_operator(nx, J, global_x, Bj_list, Sj_list, Cj_list, Tj_list, n_values = N
     return y[values_displacement:values_displacement + n_values]
 
 def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours, thus x has dimention 2*nx*(J-1)
-    """
-    Input:
-        nx: number of points in the x direction
-        J: total number of subdivisions of the domain
-        x: interface unknown 
-    Output: 
-        x: action of the operator Pi on x itself
-    """
     
     for i in range (0, (2*J - 1)*nx,2*nx):
         aux = x[i: i + nx].copy()
@@ -356,16 +248,6 @@ def Pi_operator(nx, J, x): # Swaps the artificial boundaries between neighbours,
     return x
     
 def g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list, local_js = None):
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        Lx, Ly: lenghts of the domain in the x and y direction
-        sp: source points
-        k: wavenumber
-        J: total number of subdivisions of the domain
-    Output: 
-        g: global right-hand side of the skeleton problem
-    """
     if local_js is None:
         local_js = J
 
@@ -379,7 +261,7 @@ def g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list, local_js = None):
     return g
 
 #############################################################################
-##                            Helper functions                             ##
+##                        Helper functions                                 ##
 #############################################################################
 
 def create_matrices(nx, ny, Lx, Ly, sp, k, J, displacement = 0, n_rows = None):
@@ -392,12 +274,10 @@ def create_matrices(nx, ny, Lx, Ly, sp, k, J, displacement = 0, n_rows = None):
     Bj_list = []
     Cj_list = []
     Sj_list = []
-    Rj_list = []
     bj_list = []
     
     for j in range(displacement, n_rows + displacement):
-        Rj = Rj_matrix(nx, ny, j, J)
-        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J, Rj)
+        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
         beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
         Bj = Bj_matrix(nx, ny, beltj_artf,j, J)
         Aj = Aj_matrix(vtxj, eltj, beltj_phys, k)
@@ -411,35 +291,9 @@ def create_matrices(nx, ny, Lx, Ly, sp, k, J, displacement = 0, n_rows = None):
         Bj_list.append(Bj)
         Cj_list.append(Cj)
         Sj_list.append(Sj)
-        Rj_list.append(Rj)
         bj_list.append(bj)
 
-    return vtxj_list, eltj, Aj_list, Tj_list, Bj_list, Cj_list, Sj_list, Rj_list, bj_list
-
-def print_matrices(Tj_list, Bj_list, Cj_list):
-    """
-    Function to print or visualize the matrices in the provided lists.
-    """
-    for i, Tj in enumerate(Tj_list):
-        print(f"Tj[{i}]:\n{Tj.toarray()}\n")
-        plt.figure(figsize=(8, 6))
-        plt.spy(Tj, markersize=5)
-        plt.title(f'Sparsity Pattern of Tj[{i}]')
-        plt.show()
-
-    for i, Bj in enumerate(Bj_list):
-        print(f"Bj[{i}]:\n{Bj.toarray()}\n")
-        plt.figure(figsize=(8, 6))
-        plt.spy(Bj, markersize=5)
-        plt.title(f'Sparsity Pattern of Bj[{i}]')
-        plt.show()
-
-    for i, Cj in enumerate(Cj_list):
-        print(f"Cj[{i}]:\n{Cj.toarray()}\n")
-        plt.figure(figsize=(8, 6))
-        plt.spy(Cj, markersize=5)
-        plt.title(f'Sparsity Pattern of Cj[{i}]')
-        plt.show()
+    return vtxj_list, eltj, Aj_list, Tj_list, Bj_list, Cj_list, Sj_list, bj_list
 
 def arguments():
     parser = argparse.ArgumentParser(description='Domain decomposition for Helmholtz problem')
@@ -449,7 +303,7 @@ def arguments():
     parser.add_argument('--loc_ny', type=int, default=2, help='Number of vertices for each unitary segment of the rectangle in the y direction')
     parser.add_argument('--k', type=float, default=16, help='Wavenumber of the problem')
     parser.add_argument('--ns', type=int, default=8, help='Number of point sources')
-    parser.add_argument('--J', type=int, default=4, help='Number of subdomains in the y direction (be aware that ny - 1 has to be a multiple of J)')
+    parser.add_argument('--J', type=int, default=4, help='Number of subdomains in the y direction')
     parser.add_argument('--tol', type=float, default=1e-12, help='Tolerance for the iterative methods')
     parser.add_argument('--iter_max', type=int, default=100000, help='Maximum number of iterations for the iterative methods')
     parser.add_argument('--w', type=float, default=0.5, help='Relaxation parameter for the fixed point method')
@@ -460,24 +314,10 @@ def arguments():
     return args
 
 #############################################################################
-##                      Fixed Point Method                                 ##
+##                      Fixed Point Methods                                ##
 #############################################################################
 
 def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000):
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        Lx, Ly: lenghts of the domain in the x and y direction
-        J: total number of subdivisions of the domain
-        p0: initial estimate
-        w: relaxation paramter 
-        tol: tollerance (automatically fixed to 1e-6 if not specified)
-        iter_max: maximum number of iterations (automatically fixed to 1000 if not specified)
-    Output: 
-        p_next: final iteration
-        iter: number of computed iterations
-        err: error at the final iteration
-    """
     assert w > 0 and w < 1
 
     residual = 0
@@ -485,7 +325,7 @@ def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000)
     iter = 0
 
 
-    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J)
     del _ # We don't need the vertices and the elements
 
     g = g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list)
@@ -511,20 +351,7 @@ def fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000)
     return p_next, iter, residuals
 
 def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100000):
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        Lx, Ly: lenghts of the domain in the x and y direction
-        J: total number of subdivisions of the domain
-        p0: initial estimate
-        w: relaxation paramter 
-        tol: tollerance (automatically fixed to 1e-6 if not specified)
-        iter_max: maximum number of iterations (automatically fixed to 1000 if not specified)
-    Output: 
-        p_next: final iteration
-        iter: number of computed iterations
-        err: error at the final iteration
-    """
+    
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
@@ -546,7 +373,7 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
     values_per_process = [2*j_per_process[i]*nx - (nx if i == 0 else 0) - (nx if i == size - 1 else 0)  for i in range(size)] 
     values_displacements = [sum(values_per_process[:i]) for i in range(size)]
     
-    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, _ = create_matrices(nx, ny, Lx, Ly, sp, k, J, j_displacements[rank], j_per_process[rank])
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _ = create_matrices(nx, ny, Lx, Ly, sp, k, J, j_displacements[rank], j_per_process[rank])
     del _ 
     local_g = np.empty(values_per_process[rank], dtype=np.complex128)
     local_p0 = np.empty(values_per_process[rank], dtype=np.complex128)
@@ -569,9 +396,7 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
 
     while (iter < iter_max):
         
-
         local_y = S_operator(nx, J, local_p0, Bj_list, Sj_list, Cj_list, Tj_list, values_per_process[rank], values_displacements[rank], j_per_process[rank])
-
         comm.Gatherv([local_y, MPI.COMPLEX], [y if rank == 0 else None ,([2*p for p in values_per_process],[2*v for v in values_displacements]),MPI.COMPLEX])
         
         if rank == 0:
@@ -583,7 +408,7 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
         
         local_residual = np.square(np.linalg.norm(local_p0 + local_PiSp0 - local_g, ord=2))
         residual = np.empty(1,np.float64)
-        comm.Allreduce(local_residual, residual, op=MPI.SUM)
+        comm.Reduce(local_residual, residual, op=MPI.SUM, root=0)
         residual = np.sqrt(residual)
 
         if rank == 0:
@@ -597,29 +422,18 @@ def par_fixed_point(nx, ny, Lx, Ly, sp, k, J, p0, w, tol = 1e-12, iter_max = 100
     
     comm.Gatherv(local_p_next,[p_next if rank == 0 else None,[2*p for p in values_per_process],[2*v for v in values_displacements],MPI.COMPLEX],root=0)
 
-    return p_next if rank == 0 else None, iter, residuals
+    return p_next, iter, residuals if rank == 0 else None, None, None
 #############################################################################
 ##                          GMRES Method                                   ##
 #############################################################################
 
 def MyGmres(nx, ny, Lx, Ly, sp, k, J, tol = 1e-12):
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        Lx, Ly: lenghts of the domain in the x and y direction
-        J: total number of subdivisions of the domain
-        p0: initial estimate
-        tol: tollerance (automatically fixed to 1e-12 if not specified)
-    Output: 
-        y:  solution od the interface problem using GMRES
-        Myresiduals: residuals
-    """
     def linear_op(nx, J, x, Bj_list, Sj_list, Cj_list, Tj_list):
         y = S_operator(nx, J, x, Bj_list, Sj_list, Cj_list, Tj_list)
         return x + Pi_operator(nx, J, y) 
    
 
-    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, _, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, 0, J)
+    _, _, _, Tj_list, Bj_list, Cj_list, Sj_list, bj_list = create_matrices(nx, ny, Lx, Ly, sp, k, J, 0, J)
     del _
     A = spla.LinearOperator((2*nx*(J-1), 2*nx*(J-1)), matvec =lambda x: linear_op(nx, J ,x, Bj_list, Sj_list, Cj_list, Tj_list), dtype = np.complex128)
     g = g_vector(nx, J, Sj_list, Cj_list, Bj_list, bj_list)
@@ -635,21 +449,8 @@ def MyGmres(nx, ny, Lx, Ly, sp, k, J, tol = 1e-12):
 ##                         Local Solutions                                 ##
 #############################################################################
 
-def uj_solution(nx, ny, Lx, Ly, j, J, sp, k, x): # x is the solution of the linear system
-    """
-    Input:
-        nx, ny: number of points in the x and y directions
-        Lx, Ly: lenghts of the domain in the x and y direction
-        j: subdivision to be considered
-        J: total number of subdivisions of the domain
-        sp: ?
-        k: wavenumber
-        x: interface unknown
-    Output: 
-        u: solution of the system Sj u = (bj + Bj.T @ Tj @ xj)
-    """
-    Rj = Rj_matrix(nx, ny, j, J)
-    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J, Rj)
+def uj_solution(nx, ny, Lx, Ly, j, J, sp, k, x): 
+    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
     beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
     Bj = Bj_matrix(nx, ny, beltj_artf, j, J)
     Aj = Aj_matrix(vtxj, eltj, beltj_phys, k)
@@ -665,12 +466,6 @@ def uj_solution(nx, ny, Lx, Ly, j, J, sp, k, x): # x is the solution of the line
 #############################################################################
 
 def plot_residuals(residuals, method_names):
-    """
-    Input: 
-        fixed_point_residuals, gmres_residuals: residuals obtained using the two methods
-    Output:
-        plt: plot of the concergence of the residuals
-    """
     assert len(residuals) == len(method_names)
     
     plt.figure(figsize=(10, 6))
@@ -689,27 +484,12 @@ def plot_residuals(residuals, method_names):
     plt.show()
 
 def plot_solutions(vtx, elt, arrays, titles, fig_title = None):
-    """
-    Plots multiple solutions in a single figure with subplots.
-
-    Parameters:
-    vtx: array-like, shape (n_vertices, 2)
-        The vertices of the mesh.
-    elt: array-like, shape (n_elements, 3)
-        The elements of the mesh.
-    arrays: list of array-like
-        The solutions to plot.
-    titles: list of str
-        The titles for each subplot.
-    """
     if len(arrays) != len(titles):
         raise ValueError("The number of arrays and titles must be the same.")
     
-    # Determine the common color range
     vmin = min(np.min(np.real(arr)) for arr in arrays)
     vmax = max(np.max(np.real(arr)) for arr in arrays)
 
-    # Create a figure with subplots
     fig, axes = plt.subplots(1, len(arrays), figsize=(18, 8), sharex=True, sharey=True)
     fig.suptitle(fig_title, fontsize=16)
 
@@ -718,20 +498,10 @@ def plot_solutions(vtx, elt, arrays, titles, fig_title = None):
         axes[i].set_title(title)
         fig.colorbar(axes[i].collections[0], ax=axes[i])
 
-    # Adjust the layout to prevent overlap
     plt.tight_layout()
     plt.show()
 
 def plot_times(method_names, times):
-    """
-    Plots the times for each method in a bar plot.
-
-    Parameters:
-    method_names: list of str
-        The names of the methods.
-    times: list of float
-        The times for each method.
-    """
     if len(method_names) != len(times):
         raise ValueError("The number of method names and times must be the same.")
     
@@ -739,35 +509,17 @@ def plot_times(method_names, times):
     plt.bar(method_names, times, color='skyblue')
     plt.ylabel("Time (seconds)")
     plt.title("Computation Time for Each Method")
-    plt.xticks(rotation=45, ha='right')  # Rotate x-axis labels to prevent overlap
+    plt.xticks(rotation=45, ha='right') 
     plt.grid(True, which="both", linestyle="--", linewidth=0.5)
-    plt.tight_layout()  # Adjust layout to prevent clipping of tick-labels
+    plt.tight_layout()  
     plt.show()
 
 def plot_uj_solutions(nx, ny, Lx, Ly, J, uj_solutions):
-    """
-    Plots each uj solution in a grid of subplots.
-
-    Parameters:
-    nx, ny: int
-        Number of vertices in the x and y directions.
-    Lx, Ly: float
-        Length of the domain in the x and y directions.
-    sp: list
-        List of source points.
-    k: float
-        Wavenumber.
-    J: int
-        Number of subdomains in the y direction.
-    y_gmres: array-like
-        Solution obtained from GMRES.
-    """
     fig, axes = plt.subplots(1, J, figsize=(18, 8), sharex=True, sharey=True)
     fig.suptitle("uj Solutions")
 
     for j in range(J):
-        Rj = Rj_matrix(nx, ny, j, J)
-        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J, Rj)
+        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
         uj = uj_solutions[j]
         plot_mesh(vtxj, eltj, uj, ax=axes[j])
         axes[J-1-j].set_title(f"Subdomain {j+1}")
@@ -781,33 +533,10 @@ def plot_uj_solutions(nx, ny, Lx, Ly, J, uj_solutions):
 #############################################################################
 
 def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times, residuals, values, nx, ny, Lx, Ly, J, ujs):
-    """
-    Saves all plots and printed values to a specified folder.
-
-    Parameters:
-    folder_name: str
-        The name of the folder to save the plots and values.
-    vtx: array-like
-        The vertices of the mesh.
-    elt: array-like
-        The elements of the mesh.
-    solutions: list of array-like
-        The solutions to plot.
-    method_names: list of str
-        The names of the methods.
-    times: list of float
-        The times for each method.
-    residuals: list of array-like
-        The residuals for each method.
-    values: list of str
-        The printed values to save in the file.
-    """
-    # Check if the folder exists, delete it if it does, and create a new folder
     if os.path.exists(folder_name):
         shutil.rmtree(folder_name)
     os.makedirs(folder_name)
 
-    # Save the residuals plot
     plt.figure(figsize=(10, 6))
     for res, name in zip(residuals, method_names):
         iterations = np.arange(1, len(res) + 1)
@@ -821,7 +550,6 @@ def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times,
     plt.savefig(os.path.join(folder_name, "residuals.png"))
     plt.close()
 
-    # Save the solution plots
     def save_solution_plot(solutions, titles, filename):
         
         vmin = min(np.min(arr) for arr in solutions)
@@ -842,7 +570,6 @@ def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times,
 
     method_names = np.append("Direct solver", method_names)
 
-    # Save the times plot
     plt.figure(figsize=(10, 6))
     plt.yscale('log')
     plt.bar(method_names, times, color='skyblue')
@@ -861,8 +588,7 @@ def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times,
         fig, axes = plt.subplots(1, J, figsize=(18, 8), sharex=True, sharey=True)
         fig.suptitle(filename)
         for j in range(J):
-            Rj = Rj_matrix(nx, ny, j, J)
-            vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J, Rj)
+            vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
             uj = ujs[j]
             plot_mesh(vtxj, eltj, uj, vmin, vmax, ax=axes[j])
             axes[J-1-j].set_title(f"Subdomain {J - j}")
@@ -875,12 +601,13 @@ def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times,
     save_uj_solutions([np.imag(uj) for uj in ujs], "Imaginary part of uj Solutions")
     save_uj_solutions([np.abs(uj) for uj in ujs], "Absolute value of uj Solutions")
 
-    # Save the printed values to a file
     with open(os.path.join(folder_name, "values.txt"), "w") as f:
         for value in values:
             f.write(value + "\n")    
 
-## Example resolution of model problem
+#############################################################################
+##                                 Main                                    ##
+#############################################################################
 
 def main():
 
@@ -905,8 +632,6 @@ def main():
 
     plot = args.plot
     save = args.save
-    
-    #assert (ny - 1) % J == 0
 
     sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
 
@@ -927,8 +652,7 @@ def main():
 
         def callback(x):
             residuals.append(x)
-
-        #y, _ = spla.gmres(A, b, tol=1e-12, callback=callback, callback_type='pr_norm')   
+   
         y, _ = spla.gmres(A, b, rtol=tol, callback=callback, callback_type='pr_norm')
 
         full_GMRES_time = t.time() 
@@ -936,11 +660,8 @@ def main():
         print("Total number of GMRES iterations = ", len(residuals))
         print("Direct vs GMRES error            = ", la.norm(y - x))
 
-        ## Plots
-        # plot_mesh(vtx, elt) # slow for fine meshes
-        # plt.show()
-
     initial_guess = None
+
     if rank == 0:
         initial_guess = np.ones(2*nx*(J-1), dtype=np.complex128)
     if both:
@@ -973,7 +694,7 @@ def main():
         local_GMRES_time = t.time() 
 
         print("GMRES time for the local problems = ", local_GMRES_time - fixed_time)
-        print("Total number of GMRES iterations for the local problems = ", len(My_residuals))
+        print("Total number of GMRES iterations for the skeleton problem = ", len(My_residuals))
 
         if both:
             x_par_fixed = []
@@ -992,12 +713,12 @@ def main():
                     x_seq_fixed = x_seq_fixed[:-nx]
                     x_par_fixed = x_par_fixed[:-nx]
                 
-            print("Direct vs DD_GMRES error for subproblem       = ", la.norm(x_gmres - x))
-            print("Sequential Fixed Point vs GMRES error for subproblem = ", la.norm(y_seq_fixed - y_gmres))
-            print("Parallel Fixed Point vs GMRES error for subproblem   = ", la.norm(y_par_fixed - y_gmres))
+            print("Direct vs DD_GMRES error for skeleton problem       = ", la.norm(x_gmres - x))
+            print("Sequential Fixed Point vs GMRES error for skeleton problem = ", la.norm(y_seq_fixed - y_gmres))
+            print("Parallel Fixed Point vs GMRES error for skeleton problem   = ", la.norm(y_par_fixed - y_gmres))
         
-            all_residuals = [residuals, My_residuals, res_seq_fixed, res_par_fixed]
-            all_methods = ["GMRES solver (global problem)", "GMRES solver", "Sequential Fixed Point solver", "Parallel Fixed Point solver"]
+            all_residuals = [residuals, res_par_fixed, res_seq_fixed, My_residuals]
+            all_methods = ["GMRES solver (global problem)", "Parallel Fixed Point solver", "Sequential Fixed Point solver", "GMRES SP solver"]
             method_names = all_methods
             solutions = [x, x_gmres, x_seq_fixed, x_par_fixed]
             times = [direct_time - start_time, full_GMRES_time - direct_time, par_fixed_time - full_GMRES_time, fixed_time - par_fixed_time, local_GMRES_time - fixed_time]
@@ -1038,7 +759,7 @@ def main():
                     # take out the last nx points of the previous solution
                     x_fixed = x_fixed[:-nx]
                     x_gmres = x_gmres[:-nx]
-            print("Direct vs Fixed Point error for subproblem = ", la.norm(x_fixed - x))
+            print("Direct vs Fixed Point error for skeleton problem = ", la.norm(x_fixed - x))
 
             all_residuals = [residuals, My_residuals, res_fixed]
             if size == 1:
@@ -1047,7 +768,7 @@ def main():
                 all_methods = ["GMRES solver (global problem)", "GMRES solver", "Parallel Fixed Point solver"]
             solutions = [x, x_gmres, x_fixed]
             method_names = all_methods
-            times = [direct_time - start_time, full_GMRES_time - direct_time, fixed_time - full_GMRES_time, local_GMRES_time - fixed_time]
+            times = [direct_time - start_time, full_GMRES_time - direct_time, local_GMRES_time - fixed_time, fixed_time - full_GMRES_time]
             if plot:
                 plot_residuals(all_residuals, all_methods)
                 plot_solutions(vtx, elt, np.real(solutions), all_methods, "Real part of the solution u")

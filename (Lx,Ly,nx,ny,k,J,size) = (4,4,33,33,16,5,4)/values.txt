@@ -1,8 +1,0 @@
-Direct solver time = 0.08954405784606934
-GMRES time for the full problem = 1.4649028778076172
-Fixed point time = 1.4181814193725586
-Total number of fixed point iterations = 480
-GMRES time for the local problems = 0.6175541877746582
-Total number of GMRES iterations = 627
-Total number of fixed point iterations = 480
-Total number of GMRES iterations for the local problems = 71
