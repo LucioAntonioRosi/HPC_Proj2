@@ -11,16 +11,15 @@ python3 codeProj3.py --loc_nx 32 --loc_ny 128
 
 # Aumentando J
 
-python3 codeProj3.py --loc_nx 32 --loc_ny 32 --J 8
 python3 codeProj3.py --loc_nx 32 --loc_ny 32 --J 16
 python3 codeProj3.py --loc_nx 32 --loc_ny 32 --J 32
 python3 codeProj3.py --loc_nx 32 --loc_ny 32 --J 64
 
 # Aumentando J e loc_ny
 
-python3 codeProj3.py --loc_nx 32 --loc_ny 64 --J 8
-python3 codeProj3.py --loc_nx 32 --loc_ny 128 --J 16
-python3 codeProj3.py --loc_nx 32 --loc_ny 256 --J 32
+python3 codeProj3.py --loc_nx 32 --loc_ny 64 --J 16
+python3 codeProj3.py --loc_nx 32 --loc_ny 128 --J 32
+python3 codeProj3.py --loc_nx 32 --loc_ny 256 --J 64
 
 # Controlliamo efficienza di parallelizzazione
 

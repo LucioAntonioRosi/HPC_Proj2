@@ -113,7 +113,7 @@ def plot_mesh(vtx, elt, val=None, vmin=None, vmax=None, ax = None, **kwargs):
 ##                             Local mesh                                  ##
 #############################################################################
 
-def local_mesh(nx, ny, Lx, Ly, j, J):
+def local_mesh(nx, ny, Lx, Ly, j, J, Rj):
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -126,15 +126,22 @@ def local_mesh(nx, ny, Lx, Ly, j, J):
     """
     assert j >= 0 and j < J
 
-    endj = (ny - 1) // J
+    j_per_process = [((ny - 1) // J + (1 if i < (ny - 1) % J else 0)) for i in range(j + 1)] 
+    j_displacements = [sum(j_per_process[:i]) for i in range(j + 1)]
 
-    vtx, elt = mesh(nx,ny,Lx,Ly)
+    #endj = (ny - 1) // J
 
-    vtxj = vtx[endj*j*nx:((j + 1)*endj + 1)*nx,:]
+    vtx, elt = mesh(nx,ny,Lx,Ly) 
 
-    eltj = np.append(elt[endj*j*(nx-1):((j + 1)*endj)*(nx - 1),:], 
-                     elt[(nx-1)*(ny-1) + endj*j*(nx-1):(nx-1)*(ny-1) + ((j + 1)*endj)*(nx - 1),:], axis=0) # "low triangles", "high triangles"
-    eltj = eltj - eltj.min() # renumbering of vertices for local mesh
+    #vtxj = vtx[endj*j*nx:((j + 1)*endj + 1)*nx,:]
+    vtxj = vtx[j_displacements[j]*nx:(j_displacements[j] + j_per_process[j] + 1)*nx]
+    vtxj = Rj*vtx
+
+    #eltj = np.append(elt[endj*j*(nx-1):((j + 1)*endj)*(nx - 1),:], 
+    #                 elt[(nx-1)*(ny-1) + endj*j*(nx-1):(nx-1)*(ny-1) + ((j + 1)*endj)*(nx - 1),:], axis=0) # "low triangles", "high triangles"
+    eltj = np.append(elt[j_displacements[j]*(nx - 1):(j_displacements[j] + j_per_process[j])*(nx - 1),:],
+                     elt[(nx-1)*(ny-1) + j_displacements[j]*(nx - 1):(nx-1)*(ny-1) + (j_displacements[j] + j_per_process[j])*(nx - 1),:],axis=0)
+    eltj = eltj - eltj.min() # renumbering of vertices for local mesh   
     
     return vtxj, eltj
 
@@ -149,7 +156,7 @@ def local_boundary(nx, ny, j, J):
     """
     assert j >= 0 and j < J
 
-    endj = (ny - 1) // J
+    endj = (ny - 1) // J + (1 if j < (ny - 1) % J else 0)
 
     bottom = np.hstack((np.arange(0,nx - 1,1)[:,na], np.arange(1,nx,1)[:,na]))
     top    = np.hstack((np.arange(nx*endj,nx*(endj + 1) -1,1)[:,na], np.arange(nx*endj + 1,nx*(endj + 1),1)[:,na]))
@@ -185,15 +192,20 @@ def Rj_matrix(nx, ny, j, J): # shape Rj = (nx * (((ny - 1) // J) + 1), nx * ny)
     """
     assert j >= 0 and j < J
 
-    endj = (ny - 1) // J
+    j_per_process = [((ny - 1) // J + (1 if i < (ny - 1) % J else 0)) for i in range(j + 1)] 
+    j_displacements = [sum(j_per_process[:i]) for i in range(j + 1)]
 
-    cols = np.arange(endj*j*nx,(endj*(j + 1) + 1)*nx)
+    #endj = (ny - 1) // J
+
+    #cols = np.arange(endj*j*nx,(endj*(j + 1) + 1)*nx)
+
+    cols = np.arange(j_displacements[j]*nx,(j_displacements[j] + j_per_process[j] + 1)*nx)
     rows = np.arange(len(cols))
     data = np.ones_like(cols)
 
     return csr_matrix((data, (rows, cols)), shape=(len(rows),nx * ny))
 
-def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1) // J) + 1))
+def Bj_matrix(nx, ny, belt_artf, j, J): # shape Bj = (depends on j, nx * (((ny - 1) // J) + 1))
     """
     Input:
         nx, ny: number of points in the x and y directions
@@ -207,7 +219,7 @@ def Bj_matrix(nx, ny, belt_artf, J): # shape Bj = (depends on j, nx * (((ny - 1)
     rows = np.arange(len(cols))
     data = np.ones_like(cols)
 
-    return csr_matrix((data, (rows,cols)), shape=(len(rows), nx*(((ny - 1) // J) + 1)))
+    return csr_matrix((data, (rows,cols)), shape=(len(rows), nx*(((ny - 1) // J + (1 if j < (ny - 1) % J else 0)) + 1)))
 
 # S has dimention 2*nx*(J-1) since every artificial surface has 2*nx points a part from the first and last
 # that have nx points
@@ -384,14 +396,14 @@ def create_matrices(nx, ny, Lx, Ly, sp, k, J, displacement = 0, n_rows = None):
     bj_list = []
     
     for j in range(displacement, n_rows + displacement):
-        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
+        Rj = Rj_matrix(nx, ny, j, J)
+        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J, Rj)
         beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
-        Bj = Bj_matrix(nx, ny, beltj_artf, J)
+        Bj = Bj_matrix(nx, ny, beltj_artf,j, J)
         Aj = Aj_matrix(vtxj, eltj, beltj_phys, k)
         Tj = Tj_matrix(vtxj, beltj_artf, Bj, k)
         Sj = Sj_factorization(Aj, Tj, Bj)
         Cj = Cj_matrix(nx, ny, j, J)
-        Rj = Rj_matrix(nx, ny, j, J)
         bj = bj_vector(vtxj, eltj, sp, k)
         vtxj_list.append(vtxj)
         Aj_list.append(Aj)
@@ -431,15 +443,15 @@ def print_matrices(Tj_list, Bj_list, Cj_list):
 
 def arguments():
     parser = argparse.ArgumentParser(description='Domain decomposition for Helmholtz problem')
-    parser.add_argument('--Lx', type=float, default=4, help='Length in x direction of the rectangle')
-    parser.add_argument('--Ly', type=float, default=6, help='Length in y direction of the rectangle')
-    parser.add_argument('--loc_nx', type=int, default=32, help='Number of vertices for each unitary segment of the rectangle in the x direction')
-    parser.add_argument('--loc_ny', type=int, default=32, help='Number of vertices for each unitary segment of the rectangle in the y direction')
+    parser.add_argument('--Lx', type=float, default=2, help='Length in x direction of the rectangle')
+    parser.add_argument('--Ly', type=float, default=2, help='Length in y direction of the rectangle')
+    parser.add_argument('--loc_nx', type=int, default=2, help='Number of vertices for each unitary segment of the rectangle in the x direction')
+    parser.add_argument('--loc_ny', type=int, default=2, help='Number of vertices for each unitary segment of the rectangle in the y direction')
     parser.add_argument('--k', type=float, default=16, help='Wavenumber of the problem')
     parser.add_argument('--ns', type=int, default=8, help='Number of point sources')
     parser.add_argument('--J', type=int, default=4, help='Number of subdomains in the y direction (be aware that ny - 1 has to be a multiple of J)')
     parser.add_argument('--tol', type=float, default=1e-12, help='Tolerance for the iterative methods')
-    parser.add_argument('--iter_max', type=int, default=10000, help='Maximum number of iterations for the iterative methods')
+    parser.add_argument('--iter_max', type=int, default=100000, help='Maximum number of iterations for the iterative methods')
     parser.add_argument('--w', type=float, default=0.5, help='Relaxation parameter for the fixed point method')
     parser.add_argument('--both', type=bool, default=False, help='Run both the sequential and parallel fixed point methods')
     parser.add_argument('--plot', type=bool, default=False, help='Plot the results')
@@ -636,9 +648,10 @@ def uj_solution(nx, ny, Lx, Ly, j, J, sp, k, x): # x is the solution of the line
     Output: 
         u: solution of the system Sj u = (bj + Bj.T @ Tj @ xj)
     """
-    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
+    Rj = Rj_matrix(nx, ny, j, J)
+    vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J, Rj)
     beltj_phys, beltj_artf = local_boundary(nx, ny, j, J)
-    Bj = Bj_matrix(nx, ny, beltj_artf, J)
+    Bj = Bj_matrix(nx, ny, beltj_artf, j, J)
     Aj = Aj_matrix(vtxj, eltj, beltj_phys, k)
     Tj = Tj_matrix(vtxj, beltj_artf, Bj, k)
     Sj = Sj_factorization(Aj, Tj, Bj)
@@ -753,8 +766,8 @@ def plot_uj_solutions(nx, ny, Lx, Ly, J, uj_solutions):
     fig.suptitle("uj Solutions")
 
     for j in range(J):
-        
-        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
+        Rj = Rj_matrix(nx, ny, j, J)
+        vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J, Rj)
         uj = uj_solutions[j]
         plot_mesh(vtxj, eltj, uj, ax=axes[j])
         axes[J-1-j].set_title(f"Subdomain {j+1}")
@@ -848,7 +861,8 @@ def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times,
         fig, axes = plt.subplots(1, J, figsize=(18, 8), sharex=True, sharey=True)
         fig.suptitle(filename)
         for j in range(J):
-            vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J)
+            Rj = Rj_matrix(nx, ny, j, J)
+            vtxj, eltj = local_mesh(nx, ny, Lx, Ly, j, J, Rj)
             uj = ujs[j]
             plot_mesh(vtxj, eltj, uj, vmin, vmax, ax=axes[j])
             axes[J-1-j].set_title(f"Subdomain {J - j}")
@@ -857,9 +871,9 @@ def save_plots_and_values(folder_name, vtx, elt, solutions, method_names, times,
         plt.savefig(os.path.join(folder_name, f"{filename}.png"))
         plt.close()
     
-    save_uj_solutions(np.real(ujs), "Real part of uj Solutions")
-    save_uj_solutions(np.imag(ujs), "Imaginary part of uj Solutions")
-    save_uj_solutions(np.abs(ujs), "Absolute value of uj Solutions")
+    save_uj_solutions([np.real(uj) for uj in ujs], "Real part of uj Solutions")
+    save_uj_solutions([np.imag(uj) for uj in ujs], "Imaginary part of uj Solutions")
+    save_uj_solutions([np.abs(uj) for uj in ujs], "Absolute value of uj Solutions")
 
     # Save the printed values to a file
     with open(os.path.join(folder_name, "values.txt"), "w") as f:
@@ -892,7 +906,7 @@ def main():
     plot = args.plot
     save = args.save
     
-    assert (ny - 1) % J == 0
+    #assert (ny - 1) % J == 0
 
     sp = [np.random.rand(3) * [Lx, Ly, 50.0] for _ in np.arange(ns)]
 
